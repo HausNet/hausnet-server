@@ -1,0 +1,7 @@
+{
+  "device_id": "sonoff_switch/1.23/ABC012DEF345",
+  "switches": [
+    {"name": "switch1"},
+    {"name": "switch2"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "command": "config",
+  "switches": [
+    {
+      "name": "switch1",
+      "enable": true,
+      "report_state": true,
+      "report_state_period_ms": 1000
+    },
+    {
+      "name": "switch2",
+      "enable": false
+    }
+  ]
+}
