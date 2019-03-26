@@ -1,6 +1,19 @@
 <component name="ProjectDictionaryState">
   <dictionary name="louis">
     <words>
+      <w>asctime</w>
+      <w>asyncio</w>
+      <w>backgrounding</w>
+      <w>haus</w>
+      <w>hausnet</w>
+      <w>hbmqtt</w>
+      <w>levelname</w>
+      <w>mosquitto</w>
+      <w>mqtt</w>
+      <w>mqttc</w>
+      <w>paho</w>
+      <w>pydocstyle</w>
+      <w>pylint</w>
       <w>sonoff</w>
     </words>
   </dictionary>
