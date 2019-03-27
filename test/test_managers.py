@@ -3,44 +3,55 @@ import unittest.mock as mock
 import os
 import subprocess
 import time
-from hausnet.managers import MqttManager
+from hausnet import manager
+from hausnet import coder
 from hausnet.config import conf
 
 
-class ManagerTests(unittest.TestCase):
+def send_mqtt_message(topic: str, payload: str):
+    """ Convenience function to send an MQTT message via the external mosquitto publication client.
+
+        :param topic:   Where to send message to.
+        :param payload: The actual message.
+    """
+    subprocess.check_call([
+        'mosquitto_pub',
+        '-h', conf.MQTT_BROKER,
+        '-t', topic,
+        '-m', payload
+    ])
+
+
+class MqttClientTests(unittest.TestCase):
     """ Test the MQTT communications management
     """
     @staticmethod
     def test_message_receipt():
         """ Test that messages sent are received
         """
-        manager = MqttManager(conf.MQTT_BROKER)
+        mqtt_manager = manager.HausNetMqttClient(conf.MQTT_BROKER)
         listener = mock.MagicMock()
-        manager.register_listeners({'test': listener})
-        manager.run()
-        subprocess.check_call([
-            'mosquitto_pub',
-            '-h', conf.MQTT_BROKER,
-            '-t', 'test',
-            '-m', 'hello'
-            ])
+        mqtt_manager.set_listener(listener)
+        mqtt_manager.run()
+        mqtt_manager.subscribe('test')
+        send_mqtt_message('test', 'hello')
         time.sleep(10)
-        listener.assert_called_with('hello')
-
-    def test_json_receipt(self):
-        """ Test that the Decoding"""
+        listener.assert_called_with('test', 'hello')
 
 
-def read_json(file_name: str) -> str:
-    """ Read a JSON file and the applicable schema into strings, from the
-        "json_schema" directory.
-
-        :param file_name: The path of the file relative to the json directory
-        :returns: The contents of the file as a string
+class MessageManagerTests(unittest.TestCase):
+    """ Test the structured message communications management
     """
-    json_path = os.path.dirname(os.path.abspath(__file__)) \
-        + '/../json_schema/'
-    json_file = open(json_path + file_name, 'r')
-    content = json_file.read()
-    json_file.close()
-    return content
+    @staticmethod
+    def test_json_receipt():
+        """ Test that structured messages from JSON are received and decoded correctly
+        """
+        msg_manager = manager.MessageCoder(
+            manager.HausNetMqttClient(conf.MQTT_BROKER),
+            decoder=coder.JsonDecoder()
+            )
+        listener = mock.MagicMock()
+        msg_manager.set_listener(listener)
+        msg_manager.mqtt_manager.handle_received_msg('test', '{ "id": 1, "value": "some_value" }')
+        listener.assert_called_with('test', {'id': 1, 'value': 'some_value'})
+

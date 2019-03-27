@@ -12,6 +12,7 @@
       <w>mqtt</w>
       <w>mqttc</w>
       <w>paho</w>
+      <w>pentaho</w>
       <w>pydocstyle</w>
       <w>pylint</w>
       <w>sonoff</w>
