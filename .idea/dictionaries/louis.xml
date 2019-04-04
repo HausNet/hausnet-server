@@ -1,7 +1,10 @@
 <component name="ProjectDictionaryState">
   <dictionary name="louis">
     <words>
+      <w>aioreactive</w>
       <w>asctime</w>
+      <w>asend</w>
+      <w>asubscribe</w>
       <w>asyncio</w>
       <w>backgrounding</w>
       <w>haus</w>
@@ -15,7 +18,9 @@
       <w>pentaho</w>
       <w>pydocstyle</w>
       <w>pylint</w>
+      <w>reactively</w>
       <w>sonoff</w>
+      <w>vendorname</w>
     </words>
   </dictionary>
 </component>

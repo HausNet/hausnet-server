@@ -6,6 +6,7 @@ class DefaultConfig:
     """ Default configuration applies when derived classes do not override a value. Used for development.
     """
     MQTT_BROKER = 'localhost'
+    MQTT_PORT = '1883'
 
     def __init__(self):
         logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s [%(funcName)s]', level=logging.DEBUG)
