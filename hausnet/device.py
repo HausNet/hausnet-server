@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, List
+from aioreactive.core.observables import T
 
 from hausnet.coder import JsonCoder
-from hausnet.flow import MessageCoder
+from hausnet.flow import TappedStream, MessageCoder, BufferedAsyncSource
 
 
 class State:
@@ -24,6 +25,11 @@ class State:
         if not self.in_possible_values(new_value):
             raise ValueError("%s not a valid value for $s", new_value, self.__class__.__name__)
         self.__value = new_value
+
+    def set_value(self, new_value: Any):
+        """ Alias of the setter for use in lambdas
+        """
+        self.value = new_value
 
     @classmethod
     def in_possible_values(cls, value):
@@ -51,16 +57,17 @@ class OnOffState(DiscreteState):
     def __init__(self, value: str = UNDEFINED):
         super().__init__(value)
 
-class AtomicDevice(ABC):
+
+class VirtualDevice(ABC):
     """ A representation of a device that cannot be decomposed into smaller representations. E.g. a simple switch,
-        a thermometer, etc. It has a name, a state, and a owner node.
+        a thermometer, etc. It has a name, a state, and an owner node.
     """
-    def __init__(self, name: str, state: State, node): #NodeDevice):
+    def __init__(self, name: str, state: State, node: 'NodeDevice' = None):
         """ Initialize a device.
 
             :param name:  The name of the device, has to be unique in the NodeDevice namespace.
             :param state: The state of the device, initialized to some default value.
-            :param node:  The node this device belongs to.
+            :param node:  The node this device belongs to. Usually set by the node when the device is added to it.
         """
         self.state = state
         self.name = name
@@ -86,18 +93,23 @@ class MeasuringMixin(ABC):
 
 
 class ControllingMixin(ABC):
-    """ Allows a device to control hardware. Note: This assumes the class this is used in is derived from AtomicDevice,
-        and thus has a state variable and a container.
+    """ Allows a device to control hardware. Records requests for state changes without disturbing the current state,
+        in the expectation that the current state will be updated after some condition is met (e.g. the device
+        confirms the new state). Turns the state change request into a message, then places it into a central
+        (class-wide) message buffer for further processing and eventual delivery to the device.
     """
-    def __init__(self):
-        self.future_state = None
+    control_buffer: BufferedAsyncSource = None
 
-    def send_state(self, new_state: State):
-        """ Transmits a new state to the real device. Expects the real device to respond with a "changed" message
-            containing the new state, so just records the state that is being requested as the expected future state.
+    def __init__(self):
+        self.future_state: State = None
+
+    def new_state(self, new_state: State):
+        """ Records the new state, and transmits it to the device by means of the async downstream buffer. Expects
+            the discrepancy between the current state and the requested state to be reconciled later, outside of
+            this class' context.
         """
         self.future_state = new_state
-        self.container.send_state(self.name, new_state)
+        self.control_buffer.buffer({'device': self, 'state': self.future_state.value})
 
 
 class DeviceManagementInterface(ABC):
@@ -106,40 +118,44 @@ class DeviceManagementInterface(ABC):
     """
 
 
-class BasicSwitch(AtomicDevice, ControllingMixin):
+class BasicSwitch(VirtualDevice, ControllingMixin):
     """ A basic switch that can control an output, and can report back on its own internal state (at the device)
     """
-    def __init__(self, name = 'basic_switch'):
-        AtomicDevice.__init__(self, name, OnOffState(), "")
+    def __init__(self, name: str = 'basic_switch', node: 'NodeDevice' = None):
+        super().__init__(name, OnOffState(), node)
 
 
-class NodeDevice:
+class NodeDevice():
     """ Encapsulates a network node (a "HausNode"), providing network access to one or more sensors or actuators.
 
-        The node ID is used both as a way to identify the node, but also, as part of topics  subscribed to, or
+        The node name is used both as a way to identify the node, but also, as part of topics  subscribed to, or
         published to for the node itself, and any devices the node is a gateway for.
 
-        The node ID follows the format "vendor_device/mac_lsb", with vendor the name of the vendor, e.g. "sonoff",
-        and device a vendor-specific device id (e.g. "basic" for the SonOff Basic Switch), and a device-specific
-        ID consisting of the last six hexadecimal digits of the device MAC. This ID is provided by the node itself
+        The node name follows the format "vendor_device/mac_lsb", with vendor the name of the vendor, e.g. "sonoff",
+        and device a vendor-specific device name (e.g. "basic" for the SonOff Basic Switch), and a device-specific
+        ID consisting of the last six hexadecimal digits of the device MAC. This name is provided by the node itself
         during discovery.
 
         All topics are prefaced with 'hausnet/' to namespace the HausNet environment separately from other users of
-        the MQTT broker. Each node has one downstream and one upstream topic. E.g. for a node id of
+        the MQTT broker. Each node has one downstream and one upstream topic. E.g. for a node name of
         "sonoff_basic/ABC123", these are the topics:
                 hausnet/sonoff_basic/ABC123/downstream
                 hausnet/sonoff_basic/ABC123/upstream
+
+        TODO: Currently node will happily "own" upstream topics used for downstream-heading data? Block this?
     """
 
     # The namespace prefix for all topics
     TOPIC_NAMESPACE = 'hausnet/'
 
-    def __init__(self, id:str):
-        """ Constructor.
+    def __init__(self, name: str, devices: List[VirtualDevice] = []):
+        """ Constructor. By default, uses Json de/coding
 
-            :param id: The node ID (see class doc)
+            :param name: The node name (see class doc)
         """
-        self.id = id
+        self.name = name
+        self.devices = {}
+        self.add_devices(devices)
 
     def owns_topic(self, packet: Dict[str, str]) -> bool:
         """ Given a message packet, consisting of a dictionary with the 'topic' key's entry the full topic name,
@@ -150,4 +166,14 @@ class NodeDevice:
     def topic_prefix(self):
         """ Return the prefix to any topic owned by this node
         """
-        return self.TOPIC_NAMESPACE + self.id
+        return self.TOPIC_NAMESPACE + self.name
+
+    def add_devices(self, devices: List[VirtualDevice]):
+        """ Add devices to the node. Indexes the devices by their names, and sets the reference back to the node on
+            each device.
+
+            :param devices: List of AtomicDevice objects, each with a name.
+        """
+        for device in devices:
+            device.node = self
+            self.devices[device.name] = device

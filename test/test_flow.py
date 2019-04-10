@@ -12,7 +12,7 @@ from hausnet import flow
 from hausnet import coder
 from hausnet import device
 from hausnet.config import conf
-from hausnet.flow import MqttClient, BufferedAsyncStream
+from hausnet.flow import MqttClient, BufferedAsyncSource
 from hausnet.helpers import TestableBufferedAsyncStream
 
 
@@ -59,12 +59,11 @@ class MqttMessageSourceTests(unittest.TestCase):
         self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
 
     def test_is_buffering(self):
-        """ Test that the BufferedAsyncStream buffers messages
+        """ Test that the BufferedAsyncSource buffers messages
         """
         self.message_log = []
 
         async def sink(message):
-            print(message)
             self.message_log.append(message)
 
         async def main():
@@ -152,9 +151,9 @@ class MqttClientTests(unittest.TestCase):
         loop.run_until_complete(MqttClientTests.upstream_flow(mqtt_client.upstreamSource))
         loop.close()
         self.assertEqual(len(self.asyncResults), 3, "Expected three results")
-        self.assertIn({'topic': 'test', 'message': '{ "id": 1, "value": "some_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test', 'message': '{ "id": 2, "value": "other_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test2', 'message': '{ "id": 3, "value": "next_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test', 'message': '{ "name": 1, "value": "some_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test', 'message': '{ "name": 2, "value": "other_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test2', 'message': '{ "name": 3, "value": "next_value" }'}, self.asyncResults)
 
 
 class MessageCoderTests(unittest.TestCase):
@@ -167,8 +166,8 @@ class MessageCoderTests(unittest.TestCase):
         msg_manager = flow.MessageCoder(coder.JsonCoder())
         listener = mock.MagicMock()
         msg_manager.set_listener(listener)
-        msg_manager.mqtt_client.handle_received_msg('test', '{ "id": 1, "value": "some_value" }')
-        listener.assert_called_with('test', {'id': 1, 'value': 'some_value'})
+        msg_manager.mqtt_client.handle_received_msg('test', '{ "name": 1, "value": "some_value" }')
+        listener.assert_called_with('test', {'name': 1, 'value': 'some_value'})
 
     @staticmethod
     def test_json_send():
@@ -179,9 +178,9 @@ class MessageCoderTests(unittest.TestCase):
         msg_manager = flow.MessageCoder(coder.JsonCoder())
         client = msg_manager.mqtt_client
         client.publish = mock.MagicMock()
-        msg_manager.publish('test', {'id': 1, 'value': 'some_value'})
+        msg_manager.publish('test', {'name': 1, 'value': 'some_value'})
         # noinspection PyUnresolvedReferences
-        client.publish.assert_called_with('test', '{"id": 1, "value": "some_value"}')
+        client.publish.assert_called_with('test', '{"name": 1, "value": "some_value"}')
 
 
 class RouterTests(unittest.TestCase):

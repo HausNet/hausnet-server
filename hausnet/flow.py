@@ -1,15 +1,15 @@
-import asyncio
-import socket
+from typing import Callable, Dict, Any
 import os
 import time
-import logging
+import socket
 import threading
-from collections import AsyncIterable, AsyncIterator
-from typing import Callable, Dict, Any
+import asyncio
+import logging
+
 import paho.mqtt.client as mqttc
-from aioreactive.abc import AsyncObserver, AsyncDisposable
-from aioreactive.core import AsyncStream, AsyncObservable
+from aioreactive.core import AsyncStream, AsyncObserver
 from aioreactive.core.observables import T
+import janus
 
 from hausnet.config import conf
 import hausnet.coder as coder
@@ -17,45 +17,58 @@ import hausnet.coder as coder
 logger = logging.getLogger(__name__)
 
 
-class ReceivedMessageQueue(AsyncIterable):
-    def __init__(self):
-        super().__init__()
-        self.queue = asyncio.Queue()
-        self.test_message_count = 0
-        self.test_message_limit = 0
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        print("Iterator called. Message queue length: " + str(self.queue.qsize()))
-        if self.test_message_limit != 0:
-            if self.test_message_count >= self.test_message_limit:
-                raise StopAsyncIteration()
-            else:
-                self.test_message_count += 1
-        return await self.queue.get()
-
-
-class BufferedAsyncStream(AsyncStream):
-    """ An AsyncStream with an internal buffer
+class BufferedAsyncSource(AsyncStream):
+    """ An AsyncStream with an internal buffer, that accepts data synchronously, and sends data asynchronously.
     """
     def __init__(self) -> None:
         super().__init__()
-        self.queue = asyncio.Queue()
-        self.loop_running = False
-        loop = asyncio.get_event_loop()
-        self.sending_task = loop.create_task(self.send_from_queue())
+        self.loop = asyncio.get_event_loop()
+        self.queue = janus.Queue(loop=self.loop)
+        self.sending_task = self.loop.create_task(self.stream_from_queue())
 
-    async def asend(self, value: T) -> None:
-        """ Put a value in the queue for sending when ready
-        """
-        await self.queue.put(value)
+    async def stream_from_queue(self):
+        while True:
+            await self.send_from_queue()
 
     async def send_from_queue(self):
+        message = await self.queue.async_q.get()
+        await self.asend(message)
+        self.queue.async_q.task_done()
+
+    def buffer(self, value: T):
+        """ Place a value in the buffer
+        """
+        self.queue.sync_q.put_nowait(value)
+
+
+class TestableBufferedAsyncSource(BufferedAsyncSource):
+    """ A buffered stream for testing that will only transmit a certain number of messages before stopping
+    """
+    def __init__(self, max_messages: int = 0) -> None:
+        super().__init__()
+        self.max_messages = max_messages
+
+    async def stream_from_queue(self):
+        message_count = 0
         while True:
-            message = await self.queue.get()
-            await super().asend(message)
+            await self.send_from_queue()
+            message_count += 1
+            if message_count >= self.max_messages:
+                self.queue.close()
+                break
+
+
+class TappedStream(AsyncStream):
+    """ Allows 'tapping' a stream - exposing values for storage / state purposes without interrupting the flow.
+        Intended to allow devices to take actions on state changes outside of the main data flow.
+    """
+    def __init__(self, tap_func: Callable[[T], None]) -> None:
+        super().__init__()
+        self.tap_func = tap_func
+
+    async def asend(self, value: T) -> None:
+        self.tap_func(value)
+        await super().asend(value)
 
 
 class MqttClient(mqttc.Client):
@@ -79,8 +92,8 @@ class MqttClient(mqttc.Client):
         self.on_disconnect = self.disconnect_cb
         self.on_subscribe = self.subscribe_cb
         self.on_message = self.message_cb
-        self.upstreamQueue = ReceivedMessageQueue()
-        self.upstreamSource = AsyncObservable.from_async_iterable(self.upstreamQueue)
+        #self.upstreamQueue = BufferedAsyncSource()
+        #self.upstreamSource = AsyncObservable.from_async_iterable(self.upstreamQueue)
 
     def set_listener(self, listener: Callable[[str, str], None]):
         """ Set the function that should be called on receipt of messages on subscribed topics. Both the topic and
