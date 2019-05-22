@@ -151,9 +151,9 @@ class MqttClientTests(unittest.TestCase):
         loop.run_until_complete(MqttClientTests.upstream_flow(mqtt_client.upstreamSource))
         loop.close()
         self.assertEqual(len(self.asyncResults), 3, "Expected three results")
-        self.assertIn({'topic': 'test', 'message': '{ "name": 1, "value": "some_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test', 'message': '{ "name": 2, "value": "other_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test2', 'message': '{ "name": 3, "value": "next_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test', 'message': '{ "device_id": 1, "value": "some_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test', 'message': '{ "device_id": 2, "value": "other_value" }'}, self.asyncResults)
+        self.assertIn({'topic': 'test2', 'message': '{ "device_id": 3, "value": "next_value" }'}, self.asyncResults)
 
 
 class MessageCoderTests(unittest.TestCase):
@@ -166,8 +166,8 @@ class MessageCoderTests(unittest.TestCase):
         msg_manager = flow.MessageCoder(coder.JsonCoder())
         listener = mock.MagicMock()
         msg_manager.set_listener(listener)
-        msg_manager.mqtt_client.handle_received_msg('test', '{ "name": 1, "value": "some_value" }')
-        listener.assert_called_with('test', {'name': 1, 'value': 'some_value'})
+        msg_manager.mqtt_client.handle_received_msg('test', '{ "device_id": 1, "value": "some_value" }')
+        listener.assert_called_with('test', {'device_id': 1, 'value': 'some_value'})
 
     @staticmethod
     def test_json_send():
@@ -178,9 +178,9 @@ class MessageCoderTests(unittest.TestCase):
         msg_manager = flow.MessageCoder(coder.JsonCoder())
         client = msg_manager.mqtt_client
         client.publish = mock.MagicMock()
-        msg_manager.publish('test', {'name': 1, 'value': 'some_value'})
+        msg_manager.publish('test', {'device_id': 1, 'value': 'some_value'})
         # noinspection PyUnresolvedReferences
-        client.publish.assert_called_with('test', '{"name": 1, "value": "some_value"}')
+        client.publish.assert_called_with('test', '{"device_id": 1, "value": "some_value"}')
 
 
 class RouterTests(unittest.TestCase):
@@ -191,7 +191,7 @@ class RouterTests(unittest.TestCase):
         """ Test pipeline from command input down to the MQTT client
         """
         #router = manager.InterfaceRouter()
-        #node = device.NodeDevice('name/AAA000')
+        #node = device.NodeDevice('device_id/AAA000')
         #switch = device.BasicSwitch('test')
         #mqtt_client = manager.HausNetMqttClient()
 

@@ -2,8 +2,10 @@
 # Classes to build devices of different types, wire them up, and, provide convenient lookups to devices without
 # needing to traverse device tree.
 #
+# TODO: Figure out if blueprint errors should be logged / should break process (it's breaking now)
+#
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Union, List, Tuple
+from typing import Dict, Any, Union, List, Tuple, cast
 import importlib
 import logging
 
@@ -13,19 +15,20 @@ log = logging.getLogger(__name__)
 
 
 class BuilderError(Exception):
+    """Wraps errors encountered during building for convenience"""
     pass
 
 
 class DeviceBuilder(ABC):
-    """Builds a specific device from configuration. Each concrete device type should have a corresponding builder.
-    """
-    @abstractmethod
-    def build_from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
-        """Given a structured build blueprint, build a device
+    """Builds a specific device from configuration. Each concrete device type should have a corresponding builder."""
 
-        :param device_name: The name of the device in firmware.
+    @abstractmethod
+    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> (devices.SubDevice, devices.NodeDevice):
+        """Given a structured build blueprint, build a device.
+
+        :param device_name: The device_id of the device in firmware.
         :param blueprint:   A dictionary containing the config values in the format above.
-        :returns: The built object, with the type the builder is for.
+        :returns: A device, of the type the builder builds.
         """
         pass
 
@@ -35,31 +38,19 @@ class BasicSwitchBuilder(DeviceBuilder):
             {
               'type': 'basic_switch',
             }
-        The name of the basic switch is the name of the firmware device in the node that contains it.
+        The device_id of the basic switch is the device_id of the firmware device in the node that contains it.
     """
-    def build_from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
+    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
         """Given a plan dictionary as above, construct the device
 
-            :param device_name: The name of the device in firmware.
+            :param device_name: The device_id of the device in firmware.
             :param blueprint:   A blueprint in the form of the dictionary above.
             :returns: The built BasicSwitch object.
         """
         return devices.BasicSwitch(device_name)
 
 
-class CompoundDeviceBuilder(ABC):
-    """Iteratively builds the constituent devices of a CompoundDevice"""
-    def __init__(self, builder_registry: 'DeviceBuilderRegistry'):
-        self.registry = builder_registry
-
-    @abstractmethod
-    def build_from_blueprints(self, owner: devices.CompoundDevice, blueprints: Dict[str, Any]):
-        for device_name, blueprint in blueprints.items():
-            if
-
-
-
-class NodeDeviceBuilder(CompoundDeviceBuilder):
+class NodeDeviceBuilder(DeviceBuilder):
     """Builds a node device from a blueprint dictionary. Configuration structure:
             {
               'type': 'node',
@@ -69,52 +60,54 @@ class NodeDeviceBuilder(CompoundDeviceBuilder):
                     ...
                     }
             }
-        The name of the basic switch is the name of the firmware device in the node that contains it.
+        The device_id of the basic switch is the device_id of the firmware device in the node that contains it.
 
-        @TODO: Deal with node modules & their configuration vs. shared configuration.
+        Building the constituent devices is left to the routine that built the node device.
     """
-    def build_from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
+    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
         """Given a plan dictionary as above, construct the device
 
-            :param device_name: The name of the device in firmware.
+            :param device_name: The device_id of the device in firmware.
             :param blueprint:   A blueprint in the form of the dictionary above.
             :returns: The built BasicSwitch object.
         """
-        node = devices.NodeDevice(device_name)
-        if 'devices' not in blueprint or len(blueprint['devices']) == 0:
-            raise BuilderError(f'No constituent devices for node: {device_name}')
-        self.
-        return node
+        return devices.NodeDevice(device_name)
 
 
-class DeviceBuilderRegistry:
-    """Maps device types to their builders"""
-    def __init__(self):
-        """Sets up the device type -> builder mapping"""
-        self._registry = {
-            'node':         NodeDeviceBuilder(),
-            'basic_switch': BasicSwitchBuilder(),
-        }
-
-    def get_builder(self, device_class: str):
-        """Get the builder for a specific device type
-
-            :param device_class: Name of the class to be built
-            :raises BuilderError: When the builder for the specified type cannot be found
+class StructureBuilder:
+    """Builds a tree of devices from a blueprint (dictionary). The tree closely mirrors the input blueprint in
+    structure, with the difference that the tree holds instantiated & configured devices, while the blueprint
+    just holds a text representation of devices and their configuration.
+    """
+    @classmethod
+    def build(cls, blueprint: Dict[str, Any]) -> Dict[str, Union[devices.CompoundDevice, devices.SubDevice]]:
+        """Steps through the blueprint components and build a device for each. If a device is a compound device,
+        _build_constituents() is called to build each of the sub-devices
         """
-        if device_class not in self._registry:
-            raise BuilderError(f"Device type not found: {device_class}")
-        return self._registry[device_class]
+        device_tree: Dict[str, Union[devices.Device, devices.CompoundDevice]] = {}
+        for key, device_blueprint in blueprint.items():
+            builder = DeviceBuilderRegistry.builder_for(device_blueprint['type'])
+            device_tree[key] = builder.from_blueprint(key, device_blueprint)
+            if not issubclass(device_tree[key].__class__, devices.CompoundDevice):
+                continue
+            cls._build_sub_devices(device_tree[key], device_blueprint['devices'])
+        return device_tree
+
+    @classmethod
+    def _build_sub_devices(cls, device: devices.CompoundDevice, blueprints: Dict[str, Dict[str, Any]]):
+        for name, blueprint in blueprints.items():
+            builder = DeviceBuilderRegistry.builder_for(blueprint['type'])
+            device.add_sub_device(builder.from_blueprint(name, blueprint))
 
 
-class DeviceTreeBuilder():
+class DeviceTreeBuilder:
     """Class that can build a whole device tree from a specification array. Each element of the array contains
     the definition of a device in the top level of the device hierarchy, typically, NodeDevices. Each NodeDevice
     can have one or more constituent StatefulDevices under its control. An example:
             {
                 'sonoff_switch/1ABF00':                  # Name of device (from firmware)
                 {
-                    'type':         'NodeDevice',        # The name of the class that should be created.
+                    'type':         'NodeDevice',        # The device_id of the class that should be created.
                     ...                                  # TODO: Configuration values TBD - use established patterns
                     'devices':
                     [
@@ -135,7 +128,7 @@ class DeviceTreeBuilder():
         self.error_buffer = []
 
     def build(self, description: List[Dict[str, Union[int,float,str,List[Dict]]]]) \
-            -> Tuple[Dict[str, Device], List[str]]:
+            -> Tuple[Dict[str, devices.Device], List[str]]:
         """ Builds a node / device tree from a dictionary-based description.
         """
         self.error_buffer = []
@@ -143,7 +136,7 @@ class DeviceTreeBuilder():
         return tree, self.error_buffer
 
     def build_tree_node(self, level_spec: List[Dict[str, Union[int,float,str,List[Dict]]]]) \
-            -> Dict[str, Device]:
+            -> Dict[str, devices.Device]:
         """ Recursively build the tree by building out classes depth-first. I.e.:
                 - Loop through all class specs given.
                 - If a device has subsidiary devices, call this function with the spec for those devices
@@ -151,7 +144,7 @@ class DeviceTreeBuilder():
 
             :param  level_spec: The specification for the tree level - a list of all class specs at the current level
             :return Dictionary that contains fully instantiated device objects, e.g. all their subsidiary devices
-                    have also been fully instantiated, indexed by device name.
+                    have also been fully instantiated, indexed by device device_id.
         """
         tree_node = {}
         for class_spec in level_spec:
@@ -174,7 +167,7 @@ class DeviceTreeBuilder():
             tree_node[device.name] = device
         return tree_node
 
-    def instantiate_class(self, buildable_class, config_params: Dict[str, Any]) -> Union[Device, None]:
+    def instantiate_class(self, buildable_class, config_params: Dict[str, Any]) -> Union[devices.Device, None]:
         """ Given a buildable class object, verify all the required config params are present, then create an
             object with the given config params. Assign any left-over config params as simple member variables.
         """
@@ -188,7 +181,7 @@ class DeviceTreeBuilder():
         device = buildable_class(**init_params)
         # Set the optional attributes
         for key, config_param in config_params.items():
-            if key in ('name', 'devices') or key in init_params:
+            if key in ('device_id', 'devices') or key in init_params:
                 continue
             setattr(device, key, config_param)
         return device
@@ -199,3 +192,24 @@ class DeviceTreeBuilder():
             TODO: Consider using logging instead (e.g. log output goes to real log and to client)
         """
         self.error_buffer.append(error_desc)
+
+
+class DeviceBuilderRegistry:
+    """Maps device type handles to their builders"""
+
+    # The device type handle -> builder mapping
+    _registry: Dict[str, 'DeviceBuilder'] = {
+        'node':         NodeDeviceBuilder(),
+        'basic_switch': BasicSwitchBuilder()
+    }
+
+    @classmethod
+    def builder_for(cls, type_handle: str) -> DeviceBuilder:
+        """Get the builder for a specific device type handle.
+
+            :param type_handle: Handle to the class of the appropriate builder object.
+            :raises BuilderError: When the builder for the specified type cannot be found.
+        """
+        if type_handle not in cls._registry:
+            raise BuilderError(f"Device type handle not found: {type_handle}")
+        return cls._registry[type_handle]

@@ -15,8 +15,8 @@ class DownstreamTests(unittest.TestCase):
     def test_set_device_values(self):
         """ Test that setting device values generates a stream of data.
         """
-        node_1 = NodeDevice('name/ABC123', [BasicSwitch('switch_1'), BasicSwitch('switch_2')])
-        node_2 = NodeDevice('name/456DEF', [BasicSwitch()])
+        node_1 = NodeDevice('device_id/ABC123', [BasicSwitch('switch_1'), BasicSwitch('switch_2')])
+        node_2 = NodeDevice('device_id/456DEF', [BasicSwitch()])
         messages = []
 
         async def stream_observer(message: Dict[str, Union[str, int, float, 'VirtualDevice']]):
@@ -55,8 +55,8 @@ class DownstreamTests(unittest.TestCase):
     def test_message_prep(self):
         """ Test that setting device values generates a stream of messages ready for delivery.
         """
-        node_1 = NodeDevice('name/ABC123', [BasicSwitch('switch_1'), BasicSwitch('switch_2')])
-        node_2 = NodeDevice('name/456DEF', [BasicSwitch()])
+        node_1 = NodeDevice('device_id/ABC123', [BasicSwitch('switch_1'), BasicSwitch('switch_2')])
+        node_2 = NodeDevice('device_id/456DEF', [BasicSwitch()])
         messages = []
 
         async def stream_observer(message: Dict[str, Union[str, int, float, 'VirtualDevice']]):
@@ -71,8 +71,8 @@ class DownstreamTests(unittest.TestCase):
             node_1.devices['switch_1'].new_state(OnOffState(OnOffState.OFF))
             ##
             # Stream operations, somewhat following the upstream steps:
-            #   1) Package the device state & device name as a dictionary, together with the node
-            #   2) Construct the topic name from the node, and encode the payload
+            #   1) Package the device state & device device_id as a dictionary, together with the node
+            #   2) Construct the topic device_id from the node, and encode the payload
             stream = (
                 ControllingMixin.control_buffer
                 | Op.map(lambda dev_msg: {
@@ -91,18 +91,18 @@ class DownstreamTests(unittest.TestCase):
         loop.close()
         self.assertEqual(4, len(messages), "Expected four messages to be delivered")
         self.assertEqual(
-            {'topic': 'hausnet/name/ABC123/downstream', 'message': '{"switch_1": {"state": "ON"}}'},
+            {'topic': 'hausnet/device_id/ABC123/downstream', 'message': '{"switch_1": {"state": "ON"}}'},
             messages[0],
             "node_1/switch_1 value in message should be 'ON'")
         self.assertEqual(
-            {'topic': 'hausnet/name/ABC123/downstream', 'message': '{"switch_2": {"state": "OFF"}}'},
+            {'topic': 'hausnet/device_id/ABC123/downstream', 'message': '{"switch_2": {"state": "OFF"}}'},
             messages[1],
             "node_1/switch_2 value in message should be 'OFF'")
         self.assertEqual(
-            {'topic': 'hausnet/name/456DEF/downstream', 'message': '{"basic_switch": {"state": "ON"}}'},
+            {'topic': 'hausnet/device_id/456DEF/downstream', 'message': '{"basic_switch": {"state": "ON"}}'},
             messages[2],
             "node_2/basic_switch value in message should be 'ON'")
         self.assertEqual(
-            {'topic': 'hausnet/name/ABC123/downstream', 'message': '{"switch_1": {"state": "OFF"}}'},
+            {'topic': 'hausnet/device_id/ABC123/downstream', 'message': '{"switch_1": {"state": "OFF"}}'},
             messages[3],
             "node_1/switch_1 value in message should be 'OFF'")

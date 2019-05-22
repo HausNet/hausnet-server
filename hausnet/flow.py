@@ -12,7 +12,7 @@ from aioreactive.core.observables import T
 import janus
 
 from hausnet.config import conf
-import hausnet.coder as coder
+import hausnet.coders as coders
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class MqttClient(mqttc.Client):
     def __init__(self, host: str = conf.MQTT_BROKER, port: int = conf.MQTT_PORT):
         """ Initializes client.
 
-            :param host:     Host name of broker.
+            :param host:     Host device_id of broker.
             :param port:     Port to use, defaults to standard.
         """
         super().__init__()
@@ -185,7 +185,7 @@ class MessageCoder:
     """ Manages encoded messages on top of MQTT. The specific encoding is specified by the encoder and decoder
         e.g. JSON vs protocol buffers, are passed in the constructor.
     """
-    def __init__(self, coder: coder.Coder):
+    def __init__(self, coder: coders.Coder):
         self.mqtt_client.set_listener(self.forward_decoded_message)
         self.coder = coder
         self.listener = None
@@ -205,7 +205,7 @@ class MessageCoder:
         """
         if not self.listener:
             raise Exception("No listener defined yet. Topic: %s; Message: %s", topic, message)
-        decoded_obj = self.coder.decode(message)
+        decoded_obj = self.coders.decode(message)
         self.listener(topic, decoded_obj)
 
     def publish(self, topic: str, obj: Any):
@@ -213,6 +213,6 @@ class MessageCoder:
             :param topic: Topic to publish to
             :param obj: Object to decode & publish
         """
-        self.mqtt_client.publish(topic, self.coder.encode(obj))
+        self.mqtt_client.publish(topic, self.coders.encode(obj))
 
 

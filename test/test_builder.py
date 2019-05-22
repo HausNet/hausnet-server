@@ -1,38 +1,48 @@
+from typing import cast
 import unittest
 import re
 
-from hausnet.api import DeviceTreeBuilder
-from hausnet.device import NodeDevice, BasicSwitch
+from hausnet.builders import DeviceTreeBuilder, StructureBuilder
+from hausnet.devices import NodeDevice, BasicSwitch
 
 
 class DeviceBuilderTests(unittest.TestCase):
     """ Test the building of the device tree
     """
-    def test_build_flat_class(self):
-        tree, errors = DeviceTreeBuilder().build([
-            {
-                'type': NodeDevice.__name__,
-                'name': 'test/ABC123',
-                'limit': 7
+    def test_can_build_single_node_with_single_device(self):
+        tree = StructureBuilder().build({
+            'test_node': {
+                'type': 'node',
+                'device_id': 'test/ABC123',
+                'devices': {
+                    'test_switch': {
+                        'type': 'basic_switch',
+                        'device_id': 'switch',
+                        }
+                    }
                 }
-            ])
+            })
         self.assertEqual(len(tree), 1, "Expected one device at the root of the tree")
-        self.assertIs(tree['test/ABC123'].__class__, NodeDevice, "node_A should be a Buildable")
-        self.assertEqual(tree['test/ABC123'].name, 'test/ABC123', "Expected 'test/ABC123' as the device name property")
-        # noinspection PyUnresolvedReferences
-        self.assertEqual(tree['test/ABC123'].limit, 7, "Expected a limit of '7'")
+        self.assertIs(tree['test_node'].__class__, NodeDevice, "Top-level device should be a NodeDevice")
+        node: NodeDevice = cast(NodeDevice, tree['test_node'])
+        self.assertEqual(node.device_id, 'test/ABC123', "Expected 'test/ABC123' as device_id for node")
+        self.assertEqual(len(node.sub_devices), 1, "Expected one sub-device")
+        self.assertIn(node.sub_devices, 'test_switch', "Expected test_switch sub-device key")
+        sub_device: BasicSwitch = cast(BasicSwitch, node.sub_devices['test_switch'])
+        self.assertIs(sub_device.__class__, BasicSwitch, "Sub-device should be a BasicSwitch")
+        self.assertEqual(sub_device.device_id, 'switch')
 
     def test_missing_type_reports_error(self):
         """ Test conditions where the type is omitted, or is not a valid type
         """
         tree, errors = DeviceTreeBuilder().build([
             {
-                'name':  'test/ABC123',
+                'device_id':  'test/ABC123',
                 'limit': 7
             },
             {
                 'type': 'NodeDevice',
-                'name': 'test/456DEF',
+                'device_id': 'test/456DEF',
             },
         ])
         self.assertEqual(len(tree), 1, "Expected one device to have been defined")
@@ -42,12 +52,12 @@ class DeviceBuilderTests(unittest.TestCase):
         tree, errors = DeviceTreeBuilder().build([
             {
                 'type':  'NonExistentType',
-                'name':  'test/ABC123',
+                'device_id':  'test/ABC123',
                 'limit': 7
                 },
             {
                 'type': 'NodeDevice',
-                'name': 'test/ABC123',
+                'device_id': 'test/ABC123',
                 },
             ])
         self.assertEqual(len(tree), 1, "Expected one device to have been defined")
@@ -65,12 +75,12 @@ class DeviceBuilderTests(unittest.TestCase):
                 },
             {
                 'type':  'NodeDevice',
-                'name':  'test/456DEF',
+                'device_id':  'test/456DEF',
                 },
             ])
         self.assertEqual(len(tree), 1, "Expected one device to have been defined")
         self.assertEqual(len(errors), 1, "Expected one error found")
-        self.assertRegex(errors[0], re.compile("Missing required parameter 'name' for:"))
+        self.assertRegex(errors[0], re.compile("Missing required parameter 'device_id' for:"))
         self.assertRegex(errors[0], re.compile("limit"))
         self.assertNotRegex(errors[0], re.compile("test/ABC123"))
 
@@ -80,21 +90,21 @@ class DeviceBuilderTests(unittest.TestCase):
         tree, errors = DeviceTreeBuilder().build([
             {
                 'type':    'NodeDevice',
-                'name':    'test/ABC123',
+                'device_id':    'test/ABC123',
                 'devices': [
                     {
                         'type': 'BasicSwitch',
-                        'name': 'test_switch',
+                        'device_id': 'test_switch',
                         },
                     {
                         'type': 'BasicSwitch',
-                        'name': 'test_switch_2',
+                        'device_id': 'test_switch_2',
                         },
                     ]
                 },
             {
                 'type':  'NodeDevice',
-                'name':  'test/456DEF',
+                'device_id':  'test/456DEF',
                 },
         ])
         self.assertEqual(len(errors), 0, "Expected no errors.")

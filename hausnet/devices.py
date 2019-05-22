@@ -10,10 +10,11 @@
 #      to have compound devices of other types are kept open.
 #   4. All the devices in the network can be directly addressed when changing and querying state. The framework
 #      transparently mediates message flow via the nodes to their eventual destination. The destination (e.g. the
-#      switch on an ESP8266 board) is determined by: a) The name of the node containing the device; b) The name of
-#      the device on the node board. E.g. one may have a "sonoff_switch/A7E4BB" node, which has a "basic_switch"
-#      defined. But from a high-level perspective, one would address the "basic_switch" by a local name,
-#      e.g. "bathroom_lights", directly, without concern about the actual network structure or how the messages flow.
+#      switch on an ESP8266 board) is determined by: a) The device_id of the node containing the device;
+#      b) The device_id of the device on the node board. E.g. one may have a "sonoff_switch/A7E4BB" node, which
+#      has a "basic_switch" defined. But from a high-level perspective, one would address the "basic_switch" by a
+#      contextual label, e.g. "bathroom_lights", directly, without concern about the actual network structure or
+#      how the messages flow.
 #
 
 from abc import ABC
@@ -25,40 +26,70 @@ from hausnet.states import *
 
 
 class Device(ABC):
-    """The base class for all devices."""
-    def __init__(self, name: str):
-        self.type: str = self.__class__.__name__
-        self.name: str = name
+    """The base class for all devices.
+
+     :param device_id: The ID of the device in the device firmware. This is unique locally, i.e. on a node with
+                       multiple switch sub-devices, these might be named "switch_1", "switch_2", etc.
+     """
+    def __init__(self, device_id: str):
+        self.device_id: str = device_id
+
+
+class SubDevice(Device, ABC):
+    """A device that belongs to another device, typically to gain network access through the owner (but other
+    functions may be added, e.g. treating devices as a group.
+    """
+    def __init__(self, device_id: str, owner_device: 'CompoundDevice' = None):
+        """Sets the owner of this device
+
+        :param device_id:    For the Device initializer.
+        :param owner_device: The device that owns this one. E.g. a switch would have the node it is physically a part
+                             of as its owner.
+        """
+        super().__init__(device_id)
+        self.owner_device = owner_device
 
 
 class CompoundDevice(Device, ABC):
-    """Device that contains a collection of devices managed by itself"""
-    def __init__(self, name: str, devices: List['Device'] = None):
-        super(Device, self).__init__(name)
-        self.contained_devices: Dict[str, Device] = {}
+    """Device that contains a collection of devices managed by itself."""
+    def __init__(self, device_id: str, devices: List[SubDevice] = None):
+        """Creates sub-devices if any are provided"""
+        super().__init__(device_id)
+        self.sub_devices: Dict[str, Device] = {}
         if devices:
-            self.add_contained_devices(devices)
+            self.add_sub_devices(devices)
 
-    def add_contained_devices(self, devices: List['Device']):
-        """ Add devices to the object. Indexes the devices by their names, and sets the reference back to the node on
-            each device.
+    def add_sub_device(self, device: SubDevice) -> None:
+        """Add a new sub-device, accessible from the compound device via its device_id, and set its owner relationship
+        back to this device object.
 
-            :param devices: List of AtomicDevice objects, each with a name.
+        :param device: A sub-device that belongs to this device.
+        """
+        device.owner_device = self
+        self.sub_devices[device.device_id] = device
+
+    def add_sub_devices(self, devices: List[SubDevice]) -> None:
+        """ Add multilple devices to the object
+
+            :param devices: List of SubDevice objects, each with a device_id.
         """
         for device in devices:
-            device.node = self
-            self.contained_devices[device.name] = device
+            self.add_sub_device(device)
 
 
-class StatefulDevice(Device, ABC):
+class StatefulDevice(SubDevice, ABC):
     """ Device with a state. Stateful devices never have direct network access, and needs to be part of a
     CompoundDevice in order to be available for control / measurement.
     """
-    def __init__(self, name: str, state: State, owner_node: CompoundDevice = None):
-        """Set the owner of this device, so it is reachable from here"""
-        super(Device, self).__init__(name)
+    def __init__(self, device_id: str, state: State, owner_device: 'CompoundDevice' = None):
+        """Set the owner of this device, so it is reachable from here
+
+        :param device_id:    The on-board device ID
+        :param state:        The state of the device
+        :param owner_device: The compound device that owns this device
+        """
+        super().__init__(device_id, owner_device)
         self.state = state
-        self.owner_node = owner_node
 
     @property
     def state(self):
@@ -109,25 +140,24 @@ class DeviceManagementInterface(ABC):
 
 
 class BasicSwitch(StatefulDevice, ControlDevice):
-    """ A basic switch that can control an output
-    """
-    def __init__(self, name: str, owner_node: CompoundDevice = None):
-        super(StatefulDevice, self).__init__(name, OnOffState(), owner_node)
+    """ A basic switch that can control an output"""
+    def __init__(self, device_id: str, owner_device: CompoundDevice = None):
+        super().__init__(device_id, OnOffState(), owner_device)
 
 
-class NodeDevice(Device):
+class NodeDevice(CompoundDevice):
     """ Encapsulates a network node (a "HausNode"), providing network access to one or more sensors or actuators.
 
-        The node name is used both as a way to identify the node, but also, as part of topics  subscribed to, or
+        The node device_id is used both as a way to identify the node, but also, as part of topics  subscribed to, or
         published to for the node itself, and any devices the node is a gateway for.
 
-        The node name follows the format "vendor_device/mac_lsb", with vendor the name of the vendor, e.g. "sonoff",
-        and device a vendor-specific device name (e.g. "basic" for the SonOff Basic Switch), and a device-specific
-        ID consisting of the last six hexadecimal digits of the device MAC. This name is provided by the node itself
-        during discovery.
+        The node device_id follows the format "vendor_device/mac_lsb", with vendor the device_id of the vendor, e.g.
+        "sonoff", and device a vendor-specific device device_id (e.g. "basic" for the SonOff Basic Switch), and a
+        device-specific ID consisting of the last six hexadecimal digits of the device MAC. This device_id is provided
+        by the node itself during discovery.
 
         All topics are prefaced with 'hausnet/' to namespace the HausNet environment separately from other users of
-        the MQTT broker. Each node has one downstream and one upstream topic. E.g. for a node name of
+        the MQTT broker. Each node has one downstream and one upstream topic. E.g. for a node device_id of
         "sonoff_basic/ABC123", these are the topics:
                 hausnet/sonoff_basic/ABC123/downstream
                 hausnet/sonoff_basic/ABC123/upstream
@@ -135,20 +165,17 @@ class NodeDevice(Device):
     # The namespace prefix for all topics
     TOPIC_NAMESPACE = 'hausnet/'
 
-    # For building, the required parameters for all NodeDevices
-    required_params = ['name']
-
-    def __init__(self, name: str, devices: List[VirtualDevice] = None, coder: MessageCoder = JsonCoder()):
+    def __init__(self, name: str, devices: List[SubDevice] = None, coder: MessageCoder = JsonCoder()):
         """ Constructor. By default, uses Json de/coding
 
-            :param name: The node name (see class doc)
+            :param name: The node device_id (see class doc)
         """
         super().__init__(name, devices)
         self.name = name
         self.coder = coder
 
     def owns_topic(self, packet: Dict[str, str]) -> bool:
-        """ Given a message packet, consisting of a dictionary with the 'topic' key's entry the full topic name,
+        """ Given a message packet, consisting of a dictionary with the 'topic' key's entry the full topic device_id,
             decide whether the topic is "owned" by this node.
         """
         return packet['topic'].startswith(self.topic_prefix())
@@ -158,12 +185,12 @@ class NodeDevice(Device):
         """
         return self.TOPIC_NAMESPACE + self.name
 
-    def add_devices(self, devices: List[VirtualDevice]):
+    def add_devices(self, devices: List[CompoundDevice]):
         """ Add devices to the node. Indexes the devices by their names, and sets the reference back to the node on
             each device.
 
-            :param devices: List of AtomicDevice objects, each with a name.
+            :param devices: List of AtomicDevice objects, each with a device_id.
         """
-        super().add_devices(devices)
+        self.add_devices(devices)
         for device in devices:
             device.node = self
