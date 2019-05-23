@@ -58,19 +58,6 @@ class TestableBufferedAsyncSource(BufferedAsyncSource):
                 break
 
 
-class TappedStream(AsyncStream):
-    """ Allows 'tapping' a stream - exposing values for storage / state purposes without interrupting the flow.
-        Intended to allow devices to take actions on state changes outside of the main data flow.
-    """
-    def __init__(self, tap_func: Callable[[T], None]) -> None:
-        super().__init__()
-        self.tap_func = tap_func
-
-    async def asend(self, value: T) -> None:
-        self.tap_func(value)
-        await super().asend(value)
-
-
 class MqttClient(mqttc.Client):
     """ Manages MQTT communication for the HausNet environment. Constrains the Pentaho client to just those
         functions needed to support the needed functionality.

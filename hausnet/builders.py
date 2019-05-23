@@ -5,11 +5,13 @@
 # TODO: Figure out if blueprint errors should be logged / should break process (it's breaking now)
 #
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Union, List, Tuple, cast
-import importlib
+from typing import Dict, Any, Tuple
 import logging
 
-import hausnet.devices as devices
+from aioreactive.core import AsyncObservable
+
+from hausnet.devices import NodeDevice, BasicSwitch, CompoundDevice, Device
+from hausnet.operators.operators import HausNetOperators as Op
 
 log = logging.getLogger(__name__)
 
@@ -19,16 +21,28 @@ class BuilderError(Exception):
     pass
 
 
+class DeviceBundle:
+    """ A class binding together everything needed to work with a device: The device itself; Its upstream data;
+    Its downstream data. The up/downstream are asynchronous aioreactive streams, composed of sources, destinations,
+    and intervening operations.
+    """
+    def __init__(self, device: Device, up_stream: AsyncObservable):
+        self.device: Device = device
+        self.up_stream: AsyncObservable = up_stream
+
+
 class DeviceBuilder(ABC):
     """Builds a specific device from configuration. Each concrete device type should have a corresponding builder."""
 
     @abstractmethod
-    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> (devices.SubDevice, devices.NodeDevice):
+    def from_blueprint(self, blueprint: Dict[str, Any], source: AsyncObservable, parent: CompoundDevice = None)\
+            -> DeviceBundle:
         """Given a structured build blueprint, build a device.
 
-        :param device_name: The device_id of the device in firmware.
-        :param blueprint:   A dictionary containing the config values in the format above.
-        :returns: A device, of the type the builder builds.
+        :param blueprint: A dictionary containing the config values in the format above.
+        :param source:    An observable for the data streams coming from real devices.
+        :param parent:    The parent device, if any
+        :returns: A completed device bundle, with a device of the type the builder builds.
         """
         pass
 
@@ -36,24 +50,48 @@ class DeviceBuilder(ABC):
 class BasicSwitchBuilder(DeviceBuilder):
     """Builds a basic switch from a blueprint dictionary. Configuration structure:
             {
-              'type': 'basic_switch',
+              'type':      'basic_switch',
+              'device_id': 'switch',
             }
         The device_id of the basic switch is the device_id of the firmware device in the node that contains it.
     """
-    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
-        """Given a plan dictionary as above, construct the device
+    def from_blueprint(self, blueprint: Dict[str, Any], source: AsyncObservable, parent: CompoundDevice = None) \
+            -> DeviceBundle:
+        """Given a plan dictionary as above, construct the device. The upstream is constructed with the following
+        operations:
+            1. The main data stream is filtered for messages on the switch's parent node's upstream topic;
+            2. Then, messages are decoded to a dictionary format from, e.g, JSON;
+            3. The resultant dictionary is further filtered by this device's ID (to separate out from possible
+               multiple devices in the message);
+            4. Then, the message payload is extracted;
+            5. Finally, the message state is set via a tap.
+        At its end, the upstream flow presents an Observable for use by clients. This flow contains just messages
+        from the specific device.
 
-            :param device_name: The device_id of the device in firmware.
-            :param blueprint:   A blueprint in the form of the dictionary above.
-            :returns: The built BasicSwitch object.
+        :param blueprint: A blueprint in the form of the dictionary above.
+        :param source:    An observable for the data streams coming from real devices.
+        :param parent:    The parent device for the switch.
+        :returns: A device bundle with the BasicSwitch device object and the up/downstream data sources/sinks.
+
+        TODO: Currently just handles state. Add configuration too.
         """
-        return devices.BasicSwitch(device_name)
+        device = BasicSwitch(blueprint['device_id'], parent)
+        up_stream = (
+                source
+                | Op.filter(lambda msg: msg['topic'].startswith(parent.topic_prefix()))
+                | Op.map(lambda msg: parent.coder.decode(msg['message']))
+                | Op.filter(lambda msg_dict, id=device.device_id: id in msg_dict)
+                | Op.map(lambda msg_dict, id=device.device_id: msg_dict[id])
+                | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
+        )
+        return DeviceBundle(device, up_stream)
 
 
-class NodeDeviceBuilder(DeviceBuilder):
+class NodeDeviceBuilder(DeviceBuilder, CompoundDeviceBuilder):
     """Builds a node device from a blueprint dictionary. Configuration structure:
             {
               'type': 'node',
+              '
               'devices':
                     {
                     'device1': {...(device blueprint)...}
@@ -64,141 +102,80 @@ class NodeDeviceBuilder(DeviceBuilder):
 
         Building the constituent devices is left to the routine that built the node device.
     """
-    def from_blueprint(self, device_name: str, blueprint: Dict[str, Any]) -> devices.Device:
-        """Given a plan dictionary as above, construct the device
+    def from_blueprint(self, blueprint: Dict[str, Any], source: AsyncObservable, parent: CompoundDevice = None) \
+            -> DeviceBundle:
+        """Given a plan dictionary as above, construct the device. The operations on the input (MQTT) data stream are:
+            1. The main data stream is filtered for messages on the node's upstream topic;
+            2. Then, messages are decoded to a dictionary format from, e.g, JSON;
+        At its end, the upstream flow presents an Observable for use by clients. This flow contains just messages
+        from this node.
 
-            :param device_name: The device_id of the device in firmware.
-            :param blueprint:   A blueprint in the form of the dictionary above.
-            :returns: The built BasicSwitch object.
+        :param blueprint: A blueprint in the form of the dictionary above.
+        :param source:    An observable for the data streams coming from real devices.
+        :param parent:    Unused for nodes.
+        :returns: The device bundle for a node.
+
+        TODO: Deal with module configuration messages
         """
-        return devices.NodeDevice(device_name)
+        device = NodeDevice(blueprint['device_id'])
+        up_stream = (
+                source
+                | Op.filter(lambda msg: msg['topic'].startswith(device.topic_prefix()))
+                | Op.map(lambda msg: device.coder.decode(msg['message']))
+        )
+        return DeviceBundle(device, up_stream)
 
 
-class StructureBuilder:
-    """Builds a tree of devices from a blueprint (dictionary). The tree closely mirrors the input blueprint in
-    structure, with the difference that the tree holds instantiated & configured devices, while the blueprint
-    just holds a text representation of devices and their configuration.
+class RootBuilder:
+    """Builds the devices at the root of the device tree. Compound device builders will take care of building
+    their own sub-devices.
     """
+    class RootDevice(CompoundDevice):
+        """A convenience device to act as parent for the top-level devices"""
+        p
     @classmethod
-    def build(cls, blueprint: Dict[str, Any]) -> Dict[str, Union[devices.CompoundDevice, devices.SubDevice]]:
-        """Steps through the blueprint components and build a device for each. If a device is a compound device,
-        _build_constituents() is called to build each of the sub-devices
+    def build(cls, blueprint: Dict[str, Any], upstream_source: AsyncObservable) \
+            -> Tuple[Dict[str, NodeDevice], Dict[str, DeviceBundle]]:
+        """Steps through the blueprint components and build a device, and an upstream and downstream stream for each.
+        :param blueprint:       Blueprint as a dictionary
+        :param upstream_source: Source for data flowing upstream
+        :return: A tuple of: A tree structure of all devices, mirroring the blueprint structure; A flat representation
+                 of device bundles, one bundle per device. Both are dictionaries indexed by the extended device name
+                 - the parent device name combined with the child device name separated by dots. E.g. "bathroom.lights",
+                 "bathroom.fan", "bathroom" (for the node itself), etc.
         """
-        device_tree: Dict[str, Union[devices.Device, devices.CompoundDevice]] = {}
+        device_tree: Dict[str, NodeDevice] = {}
+        device_bundles: Dict[str, DeviceBundle] = {}
         for key, device_blueprint in blueprint.items():
             builder = DeviceBuilderRegistry.builder_for(device_blueprint['type'])
-            device_tree[key] = builder.from_blueprint(key, device_blueprint)
-            if not issubclass(device_tree[key].__class__, devices.CompoundDevice):
-                continue
-            cls._build_sub_devices(device_tree[key], device_blueprint['devices'])
-        return device_tree
+            device, new_bundles = builder.from_blueprint(device_blueprint)
+            device_tree[key] = device
+            device_bundles = {**device_bundles, **new_bundles}
+        return device_tree, device_bundles
 
     @classmethod
-    def _build_sub_devices(cls, device: devices.CompoundDevice, blueprints: Dict[str, Dict[str, Any]]):
+    def from_blueprints(cls, blueprints: Dict[str, Dict[str, Any]], parent_device: CompoundDevice = None)\
+            -> Tuple[Dict[str, Device], Dict[str, DeviceBundle]]:
+        """Given a dictionary of blueprints, construct all the devices. If devices contain sub-devices, construct
+        those too, through recursion.
+
+        :param blueprints:    The collection of blueprints for devices to build.
+        :param parent_device: If the blueprints are for sub-devices, the parent they belong to.
+        :return The device tree constructed
+        """
         for name, blueprint in blueprints.items():
             builder = DeviceBuilderRegistry.builder_for(blueprint['type'])
-            device.add_sub_device(builder.from_blueprint(name, blueprint))
-
-
-class DeviceTreeBuilder:
-    """Class that can build a whole device tree from a specification array. Each element of the array contains
-    the definition of a device in the top level of the device hierarchy, typically, NodeDevices. Each NodeDevice
-    can have one or more constituent StatefulDevices under its control. An example:
-            {
-                'sonoff_switch/1ABF00':                  # Name of device (from firmware)
-                {
-                    'type':         'NodeDevice',        # The device_id of the class that should be created.
-                    ...                                  # TODO: Configuration values TBD - use established patterns
-                    'devices':
-                    [
-                        'switch':
-                        {
-                            'type': 'BasicSwitch',
-                        }
-                    ]
-                },
-                {
-                     ...                                        # Definition of next device at same level in tree
-                },
-                ...
-    """
-    def __init__(self):
-        """ Initializes the error buffer
-        """
-        self.error_buffer = []
-
-    def build(self, description: List[Dict[str, Union[int,float,str,List[Dict]]]]) \
-            -> Tuple[Dict[str, devices.Device], List[str]]:
-        """ Builds a node / device tree from a dictionary-based description.
-        """
-        self.error_buffer = []
-        tree = self.build_tree_node(description)
-        return tree, self.error_buffer
-
-    def build_tree_node(self, level_spec: List[Dict[str, Union[int,float,str,List[Dict]]]]) \
-            -> Dict[str, devices.Device]:
-        """ Recursively build the tree by building out classes depth-first. I.e.:
-                - Loop through all class specs given.
-                - If a device has subsidiary devices, call this function with the spec for those devices
-                - Assemble the result and return it up
-
-            :param  level_spec: The specification for the tree level - a list of all class specs at the current level
-            :return Dictionary that contains fully instantiated device objects, e.g. all their subsidiary devices
-                    have also been fully instantiated, indexed by device device_id.
-        """
-        tree_node = {}
-        for class_spec in level_spec:
-            device = None
-            try:
-                module = importlib.import_module('hausnet.device')
-                buildable_class = getattr(module, class_spec['type'])
-                device = self.instantiate_class(buildable_class, class_spec)
-                if not device:
-                    self.add_error(f"Device {class_spec['type']} not found.")
-                    continue
-                if 'devices' in class_spec:
-                    device.devices = self.build_tree_node(class_spec['devices'])
-            except KeyError as e:
-                self.add_error("Device type missing for: %s" % class_spec)
-            except AttributeError as e:
-                self.add_error("Non-existent device type for: %s" % class_spec)
-            except BuilderError as e:
-                self.add_error(" for: %s" % class_spec)
-            tree_node[device.name] = device
-        return tree_node
-
-    def instantiate_class(self, buildable_class, config_params: Dict[str, Any]) -> Union[devices.Device, None]:
-        """ Given a buildable class object, verify all the required config params are present, then create an
-            object with the given config params. Assign any left-over config params as simple member variables.
-        """
-        init_params = {}
-        # Extract the required parameters, and create the object with them
-        for param_var in buildable_class.required_params:
-            if param_var not in config_params:
-                self.add_error("Missing required parameter '%s' for: %s" % (param_var, config_params))
-                return None
-            init_params[param_var] = config_params[param_var]
-        device = buildable_class(**init_params)
-        # Set the optional attributes
-        for key, config_param in config_params.items():
-            if key in ('device_id', 'devices') or key in init_params:
-                continue
-            setattr(device, key, config_param)
-        return device
-
-    def add_error(self, error_desc: str):
-        """ Append and error description to the error buffer
-
-            TODO: Consider using logging instead (e.g. log output goes to real log and to client)
-        """
-        self.error_buffer.append(error_desc)
+            bundle = builder.from_blueprint(blueprint)
+            bundle.device.
+            if (isinstance(device))
+            compound_device.add_sub_device(name, builder.from_blueprint(blueprint))
 
 
 class DeviceBuilderRegistry:
     """Maps device type handles to their builders"""
 
     # The device type handle -> builder mapping
-    _registry: Dict[str, 'DeviceBuilder'] = {
+    _registry: Dict[str, DeviceBuilder] = {
         'node':         NodeDeviceBuilder(),
         'basic_switch': BasicSwitchBuilder()
     }

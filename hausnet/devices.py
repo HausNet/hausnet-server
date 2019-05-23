@@ -52,29 +52,29 @@ class SubDevice(Device, ABC):
 
 class CompoundDevice(Device, ABC):
     """Device that contains a collection of devices managed by itself."""
-    def __init__(self, device_id: str, devices: List[SubDevice] = None):
+    def __init__(self, device_id: str, devices: Dict[str, SubDevice] = None):
         """Creates sub-devices if any are provided"""
         super().__init__(device_id)
         self.sub_devices: Dict[str, Device] = {}
         if devices:
             self.add_sub_devices(devices)
 
-    def add_sub_device(self, device: SubDevice) -> None:
+    def add_sub_device(self, name: str, device: SubDevice) -> None:
         """Add a new sub-device, accessible from the compound device via its device_id, and set its owner relationship
         back to this device object.
 
         :param device: A sub-device that belongs to this device.
         """
         device.owner_device = self
-        self.sub_devices[device.device_id] = device
+        self.sub_devices[name] = device
 
-    def add_sub_devices(self, devices: List[SubDevice]) -> None:
+    def add_sub_devices(self, devices: Dict[str, SubDevice]) -> None:
         """ Add multilple devices to the object
 
             :param devices: List of SubDevice objects, each with a device_id.
         """
-        for device in devices:
-            self.add_sub_device(device)
+        for name, device in devices.items():
+            self.add_sub_device(name, device)
 
 
 class StatefulDevice(SubDevice, ABC):

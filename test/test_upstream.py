@@ -6,8 +6,8 @@ from aioreactive.core import subscribe, AsyncAnonymousObserver
 
 from hausnet.flow import TestableBufferedAsyncSource
 from hausnet.operators.operators import HausNetOperators as Op
-from hausnet.device import BasicSwitch, NodeDevice
-from hausnet.coder import JsonCoder
+from hausnet.devices import BasicSwitch, NodeDevice
+from hausnet.coders import JsonCoder
 
 
 class UpstreamTests(test.TestCase):
