@@ -1,13 +1,13 @@
-from typing import cast, Dict, Union
+from typing import cast
 import asyncio
 import unittest
 
-from aioreactive.core import subscribe, AsyncAnonymousObserver
+from aioreactive.core import subscribe, AsyncAnonymousObserver, AsyncObservable
 
-from hausnet.builders import RootBuilder
+from hausnet.builders import DevicePlantBuilder
 from hausnet.devices import NodeDevice, BasicSwitch
-from hausnet.flow import TestableBufferedAsyncSource
-from hausnet.operators.operators import HausNetOperators as Op
+from hausnet.flow import TestableBufferedAsyncStream
+from hausnet.states import OnOffState
 
 
 class DeviceBuilderTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class DeviceBuilderTests(unittest.TestCase):
 
     def test_can_build_single_node_with_single_device(self):
         """Can a basic node + device be built?"""
-        tree = RootBuilder().build({
+        bundles = DevicePlantBuilder(AsyncObservable()).build({
             'test_node': {
                 'type': 'node',
                 'device_id': 'test/ABC123',
@@ -27,9 +27,11 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
-        self.assertEqual(len(tree), 1, "Expected one device at the root of the tree")
-        self.assertIs(tree['test_node'].__class__, NodeDevice, "Top-level device should be a NodeDevice")
-        node: NodeDevice = cast(NodeDevice, tree['test_node'])
+        self.assertEqual(len(bundles), 3, "Expected 3 device bundles")
+        root = bundles['root'].device
+        self.assertEqual(len(root.sub_devices), 1, "Expected one device at the root of the tree")
+        self.assertIs(root.sub_devices['test_node'].__class__, NodeDevice, "Top-level device should be a NodeDevice")
+        node: NodeDevice = cast(NodeDevice, root.sub_devices['test_node'])
         self.assertEqual(node.device_id, 'test/ABC123', "Expected 'test/ABC123' as device_id for node")
         self.assertEqual(len(node.sub_devices), 1, "Expected one sub-device")
         self.assertIn('test_switch', node.sub_devices, "Expected test_switch sub-device key")
@@ -39,7 +41,7 @@ class DeviceBuilderTests(unittest.TestCase):
 
     def test_can_build_multiple_nodes_with_multiple_devices(self):
         """Can a set of basic nodes, each with multiple devices be built?"""
-        tree = RootBuilder().build({
+        bundles = DevicePlantBuilder(AsyncObservable()).build({
             'test_node_1': {
                 'type':      'node',
                 'device_id': 'test/ABC123',
@@ -73,13 +75,18 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
+        # Bundles
+        self.assertEqual(len(bundles), 8, "Expected 8 device bundles")
         # Test nodes
-        self.assertEqual(len(tree), 2, "Expected two nodes at the root of the tree")
-        self.assertIs(tree['test_node_1'].__class__, NodeDevice, "Top-level device #1 should be a NodeDevice")
-        self.assertIs(tree['test_node_2'].__class__, NodeDevice, "Top-level device #2 should be a NodeDevice")
-        node_1: NodeDevice = cast(NodeDevice, tree['test_node_1'])
+        root = bundles['root'].device
+        self.assertEqual(len(root.sub_devices), 2, "Expected two nodes at the root of the tree")
+        node_1 = root.sub_devices['test_node_1']
+        self.assertIs(node_1.__class__, NodeDevice, "Top-level device #1 should be a NodeDevice")
+        node_2 = root.sub_devices['test_node_2']
+        self.assertIs(node_2.__class__, NodeDevice, "Top-level device #2 should be a NodeDevice")
+        node_1: NodeDevice = cast(NodeDevice, bundles['test_node_1'].device)
         self.assertEqual(node_1.device_id, 'test/ABC123', "Expected 'test/ABC123' as device_id for node")
-        node_2 = cast(NodeDevice, tree['test_node_2'])
+        node_2 = cast(NodeDevice, bundles['test_node_2'].device)
         self.assertEqual(node_2.device_id, 'test/ABC124', "Expected 'test/ABC124' as device_id for node")
         # Test sub-devices on node 1
         self.assertEqual(len(node_1.sub_devices), 2, "Expected two sub-devices")
@@ -107,70 +114,46 @@ class DeviceBuilderTests(unittest.TestCase):
         self.assertEqual(sub_device.device_id, 'switch_3', "Sub-device C's ID should be switch_3")
 
     def test_switch_upstream_wiring_delivers(self):
-        """Test that a basic switch state updates get delivered to it and the external world"""
+        """Test that a basic switch state updates get delivered to the external world"""
         blueprint = {
             'test_node': {
                 'type': 'node',
                 'device_id': 'test/ABC123',
                 'devices': {
-                    'test_switch': {
+                    'test_switch_1': {
                         'type': 'basic_switch',
-                        'device_id': 'switch',
+                        'device_id': 'switch_1',
+                    },
+                    'test_switch_2': {
+                        'type':      'basic_switch',
+                        'device_id': 'switch_2',
                     }
                 }
             }
         }
-        source = TestableBufferedAsyncSource(2)
-        device_tree, flat_devices = RootBuilder().build(blueprint, source)
-        self.assertIn('test_node')
-        self.assertIsInstance()
+        loop = asyncio.new_event_loop()
+        source = TestableBufferedAsyncStream(loop, 2)
+        bundles = DevicePlantBuilder(source).build(blueprint)
+        source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_1": {"state": "OFF"}}'})
+        source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_2": {"state": "ON"}}'})
 
-        device_messages = []
-
-        async def stream_observer(message: Dict[str, Union[str, int, float]]):
+        async def message_dump(message):
             print(message)
-            device_messages.append(message)
 
         async def main():
-            source = (2)
-            self.inject_messages(
-                source,
-                [
-                    {
-                        'topic':   'hausnet/test/ABC123/upstream',
-                        'message': '{"switch": {"state": "OFF"}}'
-                    },
-                    {
-                        'topic':   'hausnet/test/ABC123/upstream',
-                        'message': '{"switch": {"state": "ON"}}'
-                    },
-                ]
-                )
-            streams = []
-            for name, device in tree['test_node'].sub_devices.items():
-                streams.append(
-                        source
-                        | Op.filter(lambda msg: msg['topic'].startswith(tree['test_node'].topic_prefix()))
-                        | Op.map(lambda msg: node.coder.decode(msg['message']))
-                        | Op.filter(lambda msg_dict, name=device.name: name in msg_dict)
-                        | Op.map(lambda msg_dict, name=device.name: msg_dict[name])
-                        | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
-                    )
-            for stream in streams:
-                await subscribe(stream, AsyncAnonymousObserver(stream_observer))
+            await subscribe(bundles['test_node.test_switch_1'].up_stream, AsyncAnonymousObserver(message_dump))
+            await subscribe(bundles['test_node.test_switch_2'].up_stream, AsyncAnonymousObserver(message_dump))
+            await source.stream_from_queue()
 
-        loop = asyncio.get_event_loop()
         loop.run_until_complete(main())
         loop.close()
-        self.assertEqual(3, len(device_messages), "Expected device messages")
-        self.assertEqual({'state': 'OFF'}, device_messages[0], "switch_1 state should be 'OFF'")
-        self.assertEqual({'state': 'ON'}, device_messages[1], "switch_2 state should be 'ON'")
-        self.assertEqual({'state': 'UNDEFINED'}, device_messages[2], "switch_1 state should be 'UNDEFINED'")
-        self.assertEqual('UNDEFINED', switch_1.state.value, "switch_1 state should be 'UNDEFINED'")
-        self.assertEqual('ON', switch_2.state.value, "switch_2 state should be 'ON'")
-
-    @staticmethod
-    def inject_messages(source: TestableBufferedAsyncSource, messages: List[Dict[str, str]]):
-        source.max_messages = len(messages)
-        for message in messages:
-            source.buffer(message)
+        self.assertEqual(
+            bundles['test_node.test_switch_1'].device.state.value,
+            OnOffState.OFF,
+            "Expected switch 1 to be OFF"
+        )
+        self.assertEqual(
+            bundles['test_node.test_switch_2'].device.state.value,
+            OnOffState.ON,
+            "Expected switch 1 to be ON"
+        )

@@ -5,7 +5,7 @@ import asyncio
 from aioreactive.core import subscribe, AsyncAnonymousObserver
 
 from hausnet.device import NodeDevice, BasicSwitch, OnOffState, VirtualDevice, ControllingMixin
-from hausnet.flow import TestableBufferedAsyncSource
+from hausnet.flow import TestableBufferedAsyncStream
 from hausnet.operators.operators import Operators as Op
 
 
@@ -24,7 +24,7 @@ class DownstreamTests(unittest.TestCase):
             messages.append(message)
 
         async def main():
-            ControllingMixin.control_buffer = TestableBufferedAsyncSource(4)
+            ControllingMixin.control_buffer = TestableBufferedAsyncStream(4)
             node_1.devices['switch_1'].new_state(OnOffState(OnOffState.ON))
             node_1.devices['switch_2'].new_state(OnOffState(OnOffState.OFF))
             node_2.devices['basic_switch'].new_state(OnOffState(OnOffState.ON))
@@ -64,7 +64,7 @@ class DownstreamTests(unittest.TestCase):
             messages.append(message)
 
         async def main():
-            ControllingMixin.control_buffer = TestableBufferedAsyncSource(4)
+            ControllingMixin.control_buffer = TestableBufferedAsyncStream(4)
             node_1.devices['switch_1'].new_state(OnOffState(OnOffState.ON))
             node_1.devices['switch_2'].new_state(OnOffState(OnOffState.OFF))
             node_2.devices['basic_switch'].new_state(OnOffState(OnOffState.ON))

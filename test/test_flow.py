@@ -9,11 +9,11 @@ from aioreactive.core import AsyncStream, subscribe, AsyncIteratorObserver, Asyn
 from aioreactive.core import Operators as op
 from aioreactive.operators import from_iterable
 from hausnet import flow
-from hausnet import coder
-from hausnet import device
+from hausnet import coders
+from hausnet import devices
 from hausnet.config import conf
-from hausnet.flow import MqttClient, BufferedAsyncSource
-from hausnet.helpers import TestableBufferedAsyncStream
+from hausnet.flow import MqttClient, BufferedAsyncStream
+from hausnet.flow import TestableBufferedAsyncStream
 
 
 def send_mqtt_message(topic: str, payload: str):
@@ -31,8 +31,7 @@ def send_mqtt_message(topic: str, payload: str):
 
 
 class MqttMessageSourceTests(unittest.TestCase):
-    """ Test MqttMessageSource's behaviour as a buffering observable
-    """
+    """Test behaviour as a buffering observable"""
     message_log = []
 
     async def process_messages(self, client: MqttClient, msg_count: int):
@@ -59,7 +58,7 @@ class MqttMessageSourceTests(unittest.TestCase):
         self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
 
     def test_is_buffering(self):
-        """ Test that the BufferedAsyncSource buffers messages
+        """ Test that the BufferedAsyncStream buffers messages
         """
         self.message_log = []
 

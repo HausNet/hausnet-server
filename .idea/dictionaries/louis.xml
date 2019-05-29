@@ -9,6 +9,7 @@
       <w>backgrounding</w>
       <w>haus</w>
       <w>hausnet</w>
+      <w>hausnode</w>
       <w>hbmqtt</w>
       <w>levelname</w>
       <w>mosquitto</w>
@@ -18,6 +19,7 @@
       <w>pentaho</w>
       <w>pydocstyle</w>
       <w>pylint</w>
+      <w>pytest</w>
       <w>reactively</w>
       <w>sonoff</w>
       <w>vendorname</w>

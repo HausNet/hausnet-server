@@ -17,11 +17,11 @@
 #      how the messages flow.
 #
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Dict, List
 
 from hausnet.coders import JsonCoder
-from hausnet.flow import MessageCoder, BufferedAsyncSource
+from hausnet.flow import BufferedAsyncStream, TOPIC_NAMESPACE
 from hausnet.states import *
 
 
@@ -33,6 +33,10 @@ class Device(ABC):
      """
     def __init__(self, device_id: str):
         self.device_id: str = device_id
+
+    @abstractmethod
+    def get_node(self) -> ('NodeDevice', None):
+        pass
 
 
 class SubDevice(Device, ABC):
@@ -49,6 +53,19 @@ class SubDevice(Device, ABC):
         super().__init__(device_id)
         self.owner_device = owner_device
 
+    def get_node(self) -> ('NodeDevice', None):
+        """Find the node for this device, for network access, by crawling up the tree to the root. Usually its the
+        direct parent, but in future this may change.
+
+        TODO: What happens when things are not correctly wired, and we don't have a node in the direction of the root?
+        """
+        target = self
+        while isinstance(target, SubDevice):
+            target = target.owner_device
+            if isinstance(target, NodeDevice):
+                return target
+        return None
+
 
 class CompoundDevice(Device, ABC):
     """Device that contains a collection of devices managed by itself."""
@@ -63,18 +80,32 @@ class CompoundDevice(Device, ABC):
         """Add a new sub-device, accessible from the compound device via its device_id, and set its owner relationship
         back to this device object.
 
+        :param name:   The user-friendly name of the device
         :param device: A sub-device that belongs to this device.
         """
         device.owner_device = self
         self.sub_devices[name] = device
 
     def add_sub_devices(self, devices: Dict[str, SubDevice]) -> None:
-        """ Add multilple devices to the object
+        """ Add multiple devices to the object
 
             :param devices: List of SubDevice objects, each with a device_id.
         """
         for name, device in devices.items():
             self.add_sub_device(name, device)
+
+
+class RootDevice(CompoundDevice):
+    """A convenience device to act as parent for the top-level devices. There can be only one of these"""
+    def __init__(self, devices: List[SubDevice] = None):
+        super().__init__(device_id='root', devices=devices)
+
+    def get_node(self) -> ('NodeDevice', None):
+        """The root device cannot have a node, so this returns 'None'
+
+        :returns None
+        """
+        return None
 
 
 class StatefulDevice(SubDevice, ABC):
@@ -117,7 +148,7 @@ class ControlDevice(ABC):
         confirms the new state). Turns the state change request into a message, then places it into a central
         (class-wide) message buffer for further processing and eventual delivery to the device.
     """
-    control_buffer: BufferedAsyncSource = None
+    control_buffer: BufferedAsyncStream = None
 
     def __init__(self):
         # noinspection PyTypeChecker
@@ -145,7 +176,7 @@ class BasicSwitch(StatefulDevice, ControlDevice):
         super().__init__(device_id, OnOffState(), owner_device)
 
 
-class NodeDevice(CompoundDevice):
+class NodeDevice(CompoundDevice, SubDevice):
     """ Encapsulates a network node (a "HausNode"), providing network access to one or more sensors or actuators.
 
         The node device_id is used both as a way to identify the node, but also, as part of topics  subscribed to, or
@@ -162,10 +193,8 @@ class NodeDevice(CompoundDevice):
                 hausnet/sonoff_basic/ABC123/downstream
                 hausnet/sonoff_basic/ABC123/upstream
     """
-    # The namespace prefix for all topics
-    TOPIC_NAMESPACE = 'hausnet/'
 
-    def __init__(self, name: str, devices: List[SubDevice] = None, coder: MessageCoder = JsonCoder()):
+    def __init__(self, name: str, devices: List[SubDevice] = None, coder: JsonCoder = JsonCoder()):
         """ Constructor. By default, uses Json de/coding
 
             :param name: The node device_id (see class doc)
@@ -183,7 +212,7 @@ class NodeDevice(CompoundDevice):
     def topic_prefix(self):
         """ Return the prefix to any topic owned by this node
         """
-        return self.TOPIC_NAMESPACE + self.name
+        return TOPIC_NAMESPACE + self.name
 
     def add_devices(self, devices: List[CompoundDevice]):
         """ Add devices to the node. Indexes the devices by their names, and sets the reference back to the node on
