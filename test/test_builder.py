@@ -2,11 +2,11 @@ from typing import cast
 import asyncio
 import unittest
 
-from aioreactive.core import subscribe, AsyncAnonymousObserver, AsyncObservable
+from aioreactive.core import subscribe, AsyncAnonymousObserver, AsyncObservable, AsyncStream
 
 from hausnet.builders import DevicePlantBuilder
 from hausnet.devices import NodeDevice, BasicSwitch
-from hausnet.flow import TestableBufferedAsyncStream
+from hausnet.flow import FixedSyncToAsyncBufferedStream
 from hausnet.states import OnOffState
 
 
@@ -132,7 +132,7 @@ class DeviceBuilderTests(unittest.TestCase):
             }
         }
         loop = asyncio.new_event_loop()
-        source = TestableBufferedAsyncStream(loop, 2)
+        source = FixedSyncToAsyncBufferedStream(loop, 2)
         bundles = DevicePlantBuilder(source).build(blueprint)
         source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_1": {"state": "OFF"}}'})
         source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_2": {"state": "ON"}}'})
@@ -143,7 +143,7 @@ class DeviceBuilderTests(unittest.TestCase):
         async def main():
             await subscribe(bundles['test_node.test_switch_1'].up_stream, AsyncAnonymousObserver(message_dump))
             await subscribe(bundles['test_node.test_switch_2'].up_stream, AsyncAnonymousObserver(message_dump))
-            await source.stream_from_queue()
+            await source.stream()
 
         loop.run_until_complete(main())
         loop.close()
@@ -156,4 +156,47 @@ class DeviceBuilderTests(unittest.TestCase):
             bundles['test_node.test_switch_2'].device.state.value,
             OnOffState.ON,
             "Expected switch 1 to be ON"
+        )
+
+    def test_switch_downstream_wiring_delivers(self):
+        """Test that a basic switch state changes get delivered to the MQTT end of the stream"""
+        blueprint = {
+            'test_node': {
+                'type': 'node',
+                'device_id': 'test/ABC123',
+                'devices': {
+                    'test_switch': {
+                        'type': 'basic_switch',
+                        'device_id': 'switch_1',
+                    },
+                }
+            }
+        }
+        loop = asyncio.new_event_loop()
+        source = AsyncStream()
+        sink = AsyncStream()
+        bundles = DevicePlantBuilder(source, sink).build(blueprint)
+        msg_bucket = []
+
+        async def message_dump(message):
+            print(message)
+            msg_bucket.append(message)
+
+        async def main():
+            await subscribe(bundles['test_node.test_switch'].down_stream, AsyncAnonymousObserver(message_dump))
+
+            for msg in [{'state': 'ON'}, {'state': 'OFF'}]:
+                await sink.asend(msg)
+
+        loop.run_until_complete(main())
+        loop.close()
+        self.assertEqual(
+            msg_bucket[0],
+            {'topic': 'hausnet/test_node/ABC123/downstream', 'message': '{"test_switch":{"state": "OFF"}}'},
+            "Expected an 'OFF' JSON message on topic ''hausnet/test_node/ABC123/downstream'"
+        )
+        self.assertEqual(
+            msg_bucket[1],
+            {'topic': 'hausnet/test_node/ABC123/downstream', 'message': '{"test_switch":{"state": "ON"}}'},
+            "Expected an 'ON' JSON message on topic ''hausnet/test_node/ABC123/downstream'"
         )

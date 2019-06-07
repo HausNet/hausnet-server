@@ -4,7 +4,7 @@ import asyncio
 
 from aioreactive.core import subscribe, AsyncAnonymousObserver
 
-from hausnet.flow import TestableBufferedAsyncStream
+from hausnet.flow import FixedSyncToAsyncBufferedStream, FromBufferAsyncStream, ToBufferAsyncStream
 from hausnet.operators.operators import HausNetOperators as Op
 from hausnet.devices import BasicSwitch, NodeDevice
 from hausnet.coders import JsonCoder
@@ -14,10 +14,10 @@ class UpstreamTests(test.TestCase):
     """ Test the upstream data flow
     """
     @staticmethod
-    def inject_messages(source: TestableBufferedAsyncStream, messages: List[Dict[str, str]]):
+    def inject_messages(source: FixedSyncToAsyncBufferedStream, messages: List[Dict[str, str]]):
         source.max_messages = len(messages)
         for message in messages:
-            source.buffer(message)
+            source.queue.put(message)
 
     def test_node_subscribe_to_topic_stream(self):
         """Test that different nodes can subscribe to streams based on their own topics"""
@@ -25,7 +25,7 @@ class UpstreamTests(test.TestCase):
         node_2 = NodeDevice('vendorname_heating/345DEF')
         messages = {'stream_1': [], 'stream_2': []}
         loop = asyncio.new_event_loop()
-        source = TestableBufferedAsyncStream(loop)
+        source = FixedSyncToAsyncBufferedStream(loop)
         self.inject_messages(
             source,
             [
@@ -56,7 +56,7 @@ class UpstreamTests(test.TestCase):
             )
             await subscribe(stream_2, AsyncAnonymousObserver(stream_2_observer))
             await subscribe(stream_1, AsyncAnonymousObserver(stream_1_observer))
-            await source.stream_from_queue()
+            await source.stream()
         loop.run_until_complete(main())
         loop.close()
         self.assertEqual(2, len(messages['stream_1']), "Expected two messages in stream_1")
@@ -69,7 +69,7 @@ class UpstreamTests(test.TestCase):
         node.coder = JsonCoder()
         decoded_messages = []
         loop = asyncio.new_event_loop()
-        source = TestableBufferedAsyncStream(loop, 1)
+        source = FixedSyncToAsyncBufferedStream(loop, 1)
         self.inject_messages(
             source,
             [
@@ -94,7 +94,7 @@ class UpstreamTests(test.TestCase):
                     | Op.map(lambda x: node.coder.decode(x['message']))
             )
             await subscribe(stream, AsyncAnonymousObserver(stream_observer)),
-            await source.stream_from_queue()
+            await source.stream()
         loop.run_until_complete(main())
         loop.close()
         self.assertEqual(1, len(decoded_messages), "Expected one decoded message")
@@ -114,13 +114,17 @@ class UpstreamTests(test.TestCase):
         node.devices = [switch_1, switch_2]
         device_messages = []
         loop = asyncio.new_event_loop()
-        source = TestableBufferedAsyncStream(loop, 2)
+        source = FixedSyncToAsyncBufferedStream(loop, 2)
         self.inject_messages(
             source,
             [
                 {
                     'topic':   'hausnet/vendorname_switch/ABC012/upstream',
-                    'message': '{"switch_1": {"state": "OFF"}, "switch_2": {"state": "ON"}}'
+                    'message': '{"switch_1": {"state": "OFF"}}'
+                },
+                {
+                    'topic':   'hausnet/vendorname_switch/ABC012/upstream',
+                    'message': '{"switch_2": {"state": "ON"}}'
                 },
                 {
                     'topic':   'hausnet/vendorname_switch/ABC012/upstream',
@@ -128,10 +132,13 @@ class UpstreamTests(test.TestCase):
                 },
             ]
         )
+        #sink = ToBufferAsyncStream(loop)
+        buffer = asyncio.Queue(loop=loop)
 
         async def stream_observer(message: Dict[str, Union[str, int, float]]):
             print(message)
             device_messages.append(message)
+            await buffer.put(message)
 
         async def main():
             streams = []
@@ -150,9 +157,12 @@ class UpstreamTests(test.TestCase):
                         | Op.map(lambda msg_dict, device_id=device.device_id: msg_dict[device_id])
                         | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
                     )
-            await subscribe(streams[0], AsyncAnonymousObserver(stream_observer))
-            await subscribe(streams[1], AsyncAnonymousObserver(stream_observer))
-            await source.stream_from_queue()
+            asyncio.ensure_future(subscribe(streams[0], AsyncAnonymousObserver(stream_observer)))
+            asyncio.ensure_future(subscribe(streams[1], AsyncAnonymousObserver(stream_observer)))
+            asyncio.ensure_future(source.stream())
+            #await stream_observer(await sink.queue.get())
+
+
         loop.run_until_complete(main())
         loop.close()
         self.assertEqual(3, len(device_messages), "Expected device messages")

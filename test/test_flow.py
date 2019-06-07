@@ -12,8 +12,8 @@ from hausnet import flow
 from hausnet import coders
 from hausnet import devices
 from hausnet.config import conf
-from hausnet.flow import MqttClient, BufferedAsyncStream
-from hausnet.flow import TestableBufferedAsyncStream
+from hausnet.flow import MqttClient, SyncToAsyncBufferedStream
+from hausnet.flow import FixedSyncToAsyncBufferedStream
 
 
 def send_mqtt_message(topic: str, payload: str):
@@ -42,7 +42,7 @@ class MqttMessageSourceTests(unittest.TestCase):
                 break
 
     def test_has_iterable_queue(self):
-        """ Test that the MqttClient's message receive queue is iterable
+        """ Test that the MqttClient's message receive janus_queue is iterable
         """
         self.message_log = []
 
@@ -58,7 +58,7 @@ class MqttMessageSourceTests(unittest.TestCase):
         self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
 
     def test_is_buffering(self):
-        """ Test that the BufferedAsyncStream buffers messages
+        """ Test that the SyncToAsyncBufferedStream buffers messages
         """
         self.message_log = []
 
@@ -66,7 +66,7 @@ class MqttMessageSourceTests(unittest.TestCase):
             self.message_log.append(message)
 
         async def main():
-            stream = TestableBufferedAsyncStream(3)
+            stream = FixedSyncToAsyncBufferedStream(3)
             await stream.asend({'topic': 'topic_1', 'message': 'my_message_1'})
             await stream.asend({'topic': 'topic_2', 'message': 'my_message_2'})
             await stream.asend({'topic': 'topic_3', 'message': 'my_message_3'})

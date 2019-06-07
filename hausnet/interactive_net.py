@@ -6,13 +6,13 @@ import asyncio
 from aioreactive.core import subscribe, AsyncAnonymousObserver
 
 from hausnet.builders import DevicePlantBuilder
-from hausnet.flow import BufferedAsyncStream, MqttClient
+from hausnet.flow import SyncToAsyncBufferedStream, MqttClient
 from hausnet.config import conf
 
 
 def command_loop():
     loop = asyncio.get_event_loop()
-    up_stream = BufferedAsyncStream(loop)
+    up_stream = SyncToAsyncBufferedStream(loop)
     bundles = DevicePlantBuilder(up_stream).build(conf.HAUSNET_CONFIG)
     mqtt_client = MqttClient(up_stream)
 
@@ -22,7 +22,7 @@ def command_loop():
     async def main():
         for name, device_bundle in bundles.items():
             await subscribe(device_bundle.up_stream, AsyncAnonymousObserver(sink_to_stdout))
-        await mqtt_client.up_stream.stream_from_queue()
+        await mqtt_client._up_stream.stream()
 
     loop.run_until_complete(main())
     loop.close()

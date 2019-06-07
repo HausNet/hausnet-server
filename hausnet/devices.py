@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List
 
 from hausnet.coders import JsonCoder
-from hausnet.flow import BufferedAsyncStream, TOPIC_NAMESPACE
+from hausnet.flow import SyncToAsyncBufferedStream, TOPIC_NAMESPACE
 from hausnet.states import *
 
 
@@ -56,8 +56,6 @@ class SubDevice(Device, ABC):
     def get_node(self) -> ('NodeDevice', None):
         """Find the node for this device, for network access, by crawling up the tree to the root. Usually its the
         direct parent, but in future this may change.
-
-        TODO: What happens when things are not correctly wired, and we don't have a node in the direction of the root?
         """
         target = self
         while isinstance(target, SubDevice):
@@ -97,7 +95,7 @@ class CompoundDevice(Device, ABC):
 
 class RootDevice(CompoundDevice):
     """A convenience device to act as parent for the top-level devices. There can be only one of these"""
-    def __init__(self, devices: List[SubDevice] = None):
+    def __init__(self, devices: Dict[str, SubDevice] = None):
         super().__init__(device_id='root', devices=devices)
 
     def get_node(self) -> ('NodeDevice', None):
@@ -148,7 +146,7 @@ class ControlDevice(ABC):
         confirms the new state). Turns the state change request into a message, then places it into a central
         (class-wide) message buffer for further processing and eventual delivery to the device.
     """
-    control_buffer: BufferedAsyncStream = None
+    control_buffer: SyncToAsyncBufferedStream = None
 
     def __init__(self):
         # noinspection PyTypeChecker
@@ -160,7 +158,7 @@ class ControlDevice(ABC):
             this class' context.
         """
         self.future_state = new_state
-        self.control_buffer.buffer({'device': self, 'state': self.future_state.value})
+        self.control_buffer.queue.put_nowait({'device': self, 'state': self.future_state.value})
 
 
 class DeviceManagementInterface(ABC):
@@ -194,13 +192,12 @@ class NodeDevice(CompoundDevice, SubDevice):
                 hausnet/sonoff_basic/ABC123/upstream
     """
 
-    def __init__(self, name: str, devices: List[SubDevice] = None, coder: JsonCoder = JsonCoder()):
+    def __init__(self, device_id: str, devices: Dict[str, SubDevice] = None, coder: JsonCoder = JsonCoder()):
         """ Constructor. By default, uses Json de/coding
 
             :param name: The node device_id (see class doc)
         """
-        super().__init__(name, devices)
-        self.name = name
+        super().__init__(device_id, devices)
         self.coder = coder
 
     def owns_topic(self, packet: Dict[str, str]) -> bool:
@@ -212,7 +209,10 @@ class NodeDevice(CompoundDevice, SubDevice):
     def topic_prefix(self):
         """ Return the prefix to any topic owned by this node
         """
-        return TOPIC_NAMESPACE + self.name
+        return TOPIC_NAMESPACE + self.device_id
+
+    def get_node(self) -> ('NodeDevice', None):
+        return self
 
     def add_devices(self, devices: List[CompoundDevice]):
         """ Add devices to the node. Indexes the devices by their names, and sets the reference back to the node on
