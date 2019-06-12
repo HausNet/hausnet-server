@@ -161,6 +161,73 @@ class AsyncToSyncBufferedStream(AsyncStream):
         await self._janus_queue.async_q.put(value)
 
 
+class UpStream:
+    """Encapsulates data flow from network (MQTT) up to consumers (API clients) with:
+
+    1) A Janus input buffer queue for messages from the MQTT client. This queue is shared among all UpStream objects.
+    2) An AsyncObservable that waits for input on the async half of the Janus queue and transmits it to its observers.
+       The observable must have an AsyncStream at its starting point.
+    3) A chain of operators/observers that manipulate the data as it flows upstream.
+    4) An AsyncObserver sink that dumps values at the end of the line into an async queue. There's one async output
+       queue per device.
+
+    Note that there's a common entry point for all streams (aka source_stream), and device-specific stream has to
+    split this appropriately.
+
+    TODO: Remodel this as an Observable?
+    """
+    # The source of upstream data. MQTT messages are pushed into it via a buffer queue, and observers pull data from it.
+    source_stream: AsyncStream = AsyncStream()
+    # Flags whether late-initialized variables have been initialized.
+    _late_class_vars_initialized: bool = False
+    # These have to be initialized later, when there's a loop variable available.
+    in_queue: janus.Queue
+    in_task: asyncio.Task
+
+    def __init__(self, loop, stream: AsyncStream):
+        """Set up the components of the stream. Class variables are initialized if they don't have values yet. Inserts
+        the common AsyncStream at the start of the given stream so that messages can have one drop-off point.
+
+        :param loop:   The async loop to run on
+        :param stream: An async stream with chained operations to push input data through
+        """
+        UpStream._init_class_vars(loop)
+        self._stream: AsyncStream = stream
+        self.out_queue: asyncio.Queue = asyncio.Queue(loop=loop)
+        self.out_task = loop.create_task(self._pop_messages())
+
+    @staticmethod
+    def _init_class_vars(loop):
+        if UpStream._late_class_vars_initialized:
+            return
+        UpStream.in_queue = janus.Queue(loop=loop)
+        UpStream.in_task = loop.create_task(UpStream._push_messages())
+        UpStream._late_class_vars_initialized = True
+
+    @staticmethod
+    async def _push_messages():
+        """Wait for messages to appear in the input queue, and send them off via the UpStream._source Observable.
+        """
+        while True:
+            logger.debug("Awaiting message from in queue...")
+            message = await UpStream.in_queue.async_q.get()
+            await UpStream.source_stream.asend(message)
+            UpStream.in_queue.async_q.task_done()
+            logger.debug("Got message from in queue: %s", str(message))
+
+    async def _pop_messages(self):
+        """Chain the source and the operations chain, subscribe to the result, and drop incoming messages into the
+        output queue.
+        """
+        await subscribe(self._stream, AsyncAnonymousObserver(self._to_out_queue))
+
+    async def _to_out_queue(self, message):
+        """Puts a message in the output queue"""
+        logger.debug("Putting message in out queue: %s", str(message))
+        await self.out_queue.put(message)
+        logger.debug("Waiting messages in out queue: %s", str(self.out_queue.qsize()))
+
+
 class MqttInterfaceStreams:
     """Encapsulates the upstream and downstream functionality needed to shuffle messages between MQTT and the async
     up and down-streams
@@ -198,7 +265,7 @@ class MqttInterfaceStreams:
 
 
 class DeviceInterfaceStreams:
-    """Encapsulates functionality to manage streaming at the device end"""
+    """Encapsulates functionality to manage streaming"""
     def __init__(self, loop, up_stream: AsyncObservable, down_stream: AsyncStream):
         self.loop = loop
         self._up_stream: AsyncObservable = up_stream
