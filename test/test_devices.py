@@ -1,6 +1,6 @@
 import unittest as test
 
-from hausnet.device import *
+from hausnet.devices import *
 
 
 class DeviceTests(test.TestCase):
@@ -9,7 +9,7 @@ class DeviceTests(test.TestCase):
     def test_basic_switch_core(self):
         """ Test the core operations on a basic switch.
         """
-        switch = BasicSwitch()
+        switch = BasicSwitch("switch")
         self.assertListEqual(
             switch.state.possible_values,
             [OnOffState.UNDEFINED, OnOffState.OFF, OnOffState.ON],
@@ -22,4 +22,3 @@ class DeviceTests(test.TestCase):
             switch.state.value = 'INVALID'
         switch.state.value = OnOffState.ON
         self.assertEqual(switch.state.value, OnOffState.ON, "Switch should be turned ON")
-

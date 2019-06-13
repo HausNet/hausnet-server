@@ -155,33 +155,6 @@ class MqttClientTests(unittest.TestCase):
         self.assertIn({'topic': 'test2', 'message': '{ "device_id": 3, "value": "next_value" }'}, self.asyncResults)
 
 
-class MessageCoderTests(unittest.TestCase):
-    """ Test the structured message communications management
-    """
-    @staticmethod
-    def test_json_receipt():
-        """ Test that structured messages from JSON are received and decoded correctly
-        """
-        msg_manager = flow.MessageCoder(coder.JsonCoder())
-        listener = mock.MagicMock()
-        msg_manager.set_listener(listener)
-        msg_manager.mqtt_client.handle_received_msg('test', '{ "device_id": 1, "value": "some_value" }')
-        listener.assert_called_with('test', {'device_id': 1, 'value': 'some_value'})
-
-    @staticmethod
-    def test_json_send():
-        """ Test that an object is correctly sent and received via a JSON encoder
-        """
-        client = flow.MqttClient(conf.MQTT_BROKER)
-        client.publish = mock.MagicMock()
-        msg_manager = flow.MessageCoder(coder.JsonCoder())
-        client = msg_manager.mqtt_client
-        client.publish = mock.MagicMock()
-        msg_manager.publish('test', {'device_id': 1, 'value': 'some_value'})
-        # noinspection PyUnresolvedReferences
-        client.publish.assert_called_with('test', '{"device_id": 1, "value": "some_value"}')
-
-
 class RouterTests(unittest.TestCase):
     """ Test message routing between the HausNet environment and the external world
     """

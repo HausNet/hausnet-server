@@ -1,4 +1,3 @@
-from abc import ABC
 from queue import Empty
 from typing import Dict, Any, List, Callable
 import asyncio
@@ -31,271 +30,51 @@ def topic_name(prefix, direction: int):
     return f"{prefix}{TOPIC_DOWNSTREAM_APPENDIX}"
 
 
-class FixedSizeStream(ABC):
-    def __init__(self, max_messages):
-        """Set up the counting of messages. Note that using this class requires the implementation or the inheritance
-        of an implementation of asend()
-
-        :param max_messages: The number of messages to send.
-        """
-        self.max_messages = max_messages
-
-    async def stream(self):
-        """Loop to stream values from the queue until max reached"""
-        for message_count in range(0, self.max_messages):
-            # noinspection PyUnresolvedReferences
-            await self.asend_from_queue()
-
-
-class FromBufferAsyncStream(AsyncStream):
-    """An AsyncStream that streams from an async queue forever. In order for a message to be sent, put it in the queue
-    of this class
-    """
-    def __init__(self, loop):
-        """Set up the queue to use"""
+class AsyncStreamFromQueue(AsyncStream):
+    """An AsyncStream streaming from an async Queue"""
+    def __init__(self, loop, source_queue: asyncio.Queue) -> None:
         super().__init__()
-        self.queue = asyncio.Queue(loop=loop)
+        self.queue: asyncio.Queue = source_queue
+        self.stream_task = loop.create_task(self.stream())
 
     async def stream(self):
-        """Permanent loop to send data as it becomes available"""
         while True:
-            await self.asend_from_queue()
-
-    async def asend_from_queue(self):
-        logger.debug(f"Getting message from queue...")
-        message = await self.queue.get()
-        await self.asend(message)
-        self.queue.task_done()
-
-    async def asend(self, value):
-        logger.debug("Got value: %s", str(value))
-        await super().asend(value)
+            logger.debug("Awaiting message from queue...")
+            message = await self.queue.get()
+            await self.asend(message)
+            self.queue.task_done()
+            logger.debug("Sent message from queue: %s", str(message))
 
 
-class FixedFromBufferAsyncStream(FixedSizeStream, FromBufferAsyncStream):
-    """An FromBufferAsyncStream that stop sending after a fixed number of messages"""
-    def __init__(self, loop, max_messages: int):
-        """Set up the queue to use"""
-        # noinspection PyCallByClass
-        FromBufferAsyncStream.__init__(self, loop)
-        # noinspection PyCallByClass
-        FixedSizeStream.__init__(self, max_messages)
-
-
-class ToBufferAsyncStream(AsyncStream):
-    """An AsyncStream that streams into an async queue forever. Messages can be retrieved via the queue member
-    variable of this class.
-    """
-    def __init__(self, loop):
-        """Set up the queue to use"""
+class AsyncStreamToQueue(AsyncStream):
+    """An async stream that dumps the values it observes into an async queue."""
+    def __init__(self, sink_queue: asyncio.Queue) -> None:
         super().__init__()
-        self.queue = asyncio.Queue(loop=loop)
+        self.queue = sink_queue
 
     async def asend(self, value):
-        logger.debug("Sending value to async queue: %s", str(value))
+        logger.debug("Received value, putting in queue")
         await self.queue.put(value)
 
 
-class SyncToAsyncBufferedStream(AsyncStream):
-    """An AsyncStream with an internal buffer, that accepts data synchronously, and sends data asynchronously. Use this
-    class' queue to access the streamed values
-    """
-    def __init__(self, loop):
-        """Create a Janus (async <-> sync) queue for a buffer.
+class MessageStream:
+    """Encapsulates one-directional data flow from the API to the network (MQTT)."""
 
-        :param loop: The async event loop for the Janus queue
+    def __init__(self, loop, source: AsyncStreamFromQueue, stream_ops: AsyncStream, sink: AsyncStreamToQueue):
+        """Sets up subscribing the given stream to the given sink via an async task.
+
+        :param stream_ops: An async stream with a source and chained operations.
+        :param sink:       An async stream that dumps its received values into a Queue (meant for the MQTT client).
         """
-        super().__init__()
-        self._janus_queue = janus.Queue(loop=loop)
-        self.queue = self._janus_queue.sync_q
+        self.source = source
+        self.stream_ops = stream_ops
+        self.sink = sink
+        self.out_task = loop.create_task(self._subscribe())
 
-    async def stream(self) -> None:
-        """Permanent loop to send data as it arrives"""
-        while True:
-            await self.send_from_queue()
-
-    async def send_from_queue(self) -> None:
-        message = await self._janus_queue.async_q.get()
-        await self.asend(message)
-        self._janus_queue.async_q.task_done()
-
-
-class FixedSyncToAsyncBufferedStream(SyncToAsyncBufferedStream):
-    """ A SyncToAsyncBufferedStream that will only transmit a certain number of messages before stopping. Intended for
-    testing, where the stream should stop when test data has been sent.
-    """
-    def __init__(self, loop, max_messages: int = 0):
-        """Set up the parent object, and set up counting of messages
-
-        :param loop: The event loop
-        :param max_messages: The number of messages to send.
-        """
-        super().__init__(loop)
-        self.max_messages = max_messages
-        self.message_count = 0
-
-    async def stream(self):
-        """Send max_messages number of messages from the queue, then stop streaming."""
-        while True:
-            await self.send_from_queue()
-            self.message_count += 1
-            if self.message_count >= self.max_messages:
-                break
-
-
-class AsyncToSyncBufferedStream(AsyncStream):
-    """An async stream that collects what it observes in a Janus queue for pickup by a non-async (e.g. on another
-    thread) queue. Note that it may be possible to implement as an observer only, but the stream metaphor still
-    applies even if it is async on one side and sync on another.
-    """
-    def __init__(self, loop):
-        """Sets up the Janus queue, and easy access to the sync queue which needs to be accessible for
-        values to be picked up.
-        """
-        super().__init__()
-        self._janus_queue = janus.Queue(loop=loop)
-        self.queue = self._janus_queue.sync_q
-
-    async def asend_core(self, value) -> None:
-        """Send value to async queue for pickup on sync side"""
-        await self._janus_queue.async_q.put(value)
-
-
-class UpStream:
-    """Encapsulates data flow from network (MQTT) up to consumers (API clients) with:
-
-    1) A Janus input buffer queue for messages from the MQTT client. This queue is shared among all UpStream objects.
-    2) An AsyncObservable that waits for input on the async half of the Janus queue and transmits it to its observers.
-       The observable must have an AsyncStream at its starting point.
-    3) A chain of operators/observers that manipulate the data as it flows upstream.
-    4) An AsyncObserver sink that dumps values at the end of the line into an async queue. There's one async output
-       queue per device.
-
-    Note that there's a common entry point for all streams (aka source_stream), and device-specific stream has to
-    split this appropriately.
-
-    TODO: Remodel this as an Observable?
-    """
-    # The source of upstream data. MQTT messages are pushed into it via a buffer queue, and observers pull data from it.
-    source_stream: AsyncStream = AsyncStream()
-    # Flags whether late-initialized variables have been initialized.
-    _late_class_vars_initialized: bool = False
-    # These have to be initialized later, when there's a loop variable available.
-    in_queue: janus.Queue
-    in_task: asyncio.Task
-
-    def __init__(self, loop, stream: AsyncStream):
-        """Set up the components of the stream. Class variables are initialized if they don't have values yet. Inserts
-        the common AsyncStream at the start of the given stream so that messages can have one drop-off point.
-
-        :param loop:   The async loop to run on
-        :param stream: An async stream with chained operations to push input data through
-        """
-        UpStream._init_class_vars(loop)
-        self._stream: AsyncStream = stream
-        self.out_queue: asyncio.Queue = asyncio.Queue(loop=loop)
-        self.out_task = loop.create_task(self._pop_messages())
-
-    @staticmethod
-    def _init_class_vars(loop):
-        if UpStream._late_class_vars_initialized:
-            return
-        UpStream.in_queue = janus.Queue(loop=loop)
-        UpStream.in_task = loop.create_task(UpStream._push_messages())
-        UpStream._late_class_vars_initialized = True
-
-    @staticmethod
-    async def _push_messages():
-        """Wait for messages to appear in the input queue, and send them off via the UpStream._source Observable.
-        """
-        while True:
-            logger.debug("Awaiting message from in queue...")
-            message = await UpStream.in_queue.async_q.get()
-            await UpStream.source_stream.asend(message)
-            UpStream.in_queue.async_q.task_done()
-            logger.debug("Got message from in queue: %s", str(message))
-
-    async def _pop_messages(self):
-        """Chain the source and the operations chain, subscribe to the result, and drop incoming messages into the
-        output queue.
-        """
-        await subscribe(self._stream, AsyncAnonymousObserver(self._to_out_queue))
-
-    async def _to_out_queue(self, message):
-        """Puts a message in the output queue"""
-        logger.debug("Putting message in out queue: %s", str(message))
-        await self.out_queue.put(message)
-        logger.debug("Waiting messages in out queue: %s", str(self.out_queue.qsize()))
-
-
-class MqttInterfaceStreams:
-    """Encapsulates the upstream and downstream functionality needed to shuffle messages between MQTT and the async
-    up and down-streams
-    """
-    def __init__(self, loop):
-        """Sets up the up/down-stream buffers, sink, source, and message pushing task"""
-        self.upstream_src: AsyncStream = AsyncStream()
-        self.upstream_queue: janus.Queue = janus.Queue(loop=loop)
-        self.upstream_task: (asyncio.Task, None) = None
-        self.downstream_sink: AsyncStream = AsyncStream()
-        self.downstream_queue: janus.Queue = janus.Queue(loop=loop)
-
-    async def stream_up(self):
-        """Streams data upstream. Creates a task that awaits values on the async side from the Janus queue, and then
-        sends them down the upstream_src operations stream via the AsyncStream at its head.
-        """
-
-        async def push_upstream():
-            while True:
-                message = await self.upstream_queue.async_q.get()
-                self.upstream_src.asend(message)
-
-        self.upstream_task = asyncio.create_task(push_upstream())
-
-    async def stream_down(self):
-        """Provide an endpoint observer that dumps arriving messages (via the downstream) into a Janus buffer
-        to be picked up by the threaded MQTT publish loop
-        """
-
-        async def subscriber(message: Any):
-            """Put the received messages into the async buffer queue"""
-            await self.downstream_queue.async_q.put(message)
-
-        await subscribe(self.downstream_sink, AsyncAnonymousObserver(subscriber))
-
-
-class DeviceInterfaceStreams:
-    """Encapsulates functionality to manage streaming"""
-    def __init__(self, loop, up_stream: AsyncObservable, down_stream: AsyncStream):
-        self.loop = loop
-        self._up_stream: AsyncObservable = up_stream
-        self._down_stream: AsyncStream = down_stream
-        self.downstream_queue: asyncio.Queue = asyncio.Queue(loop=loop)
-        self.upstream_queue: asyncio.Queue = asyncio.Queue(loop=loop)
-        self.downstream_task = None
-
-    async def stream_up(self):
-        """Run the upstream communication. Upstream data is pushed into the upstream_src chain of operations by
-        a downstream async task, and end results are deposited into the upstream_buffer queue for each device.
-        """
-
-        async def subscriber(message: Any):
-            """Put the received messages into the async buffer queue"""
-            await self.upstream_queue.put(message)
-
-        await subscribe(self._up_stream, AsyncAnonymousObserver(subscriber))
-
-    def stream_down(self):
-        """Runs the downstream communication. Creates a task that awaits values from the downstream queue, and then
-        sends them down the downstream_sink operations stream via the AsyncStream at its head.
-        """
-
-        async def push_downstream():
-            while True:
-                message = await self.downstream_queue.get()
-                self._down_stream.asend(message)
-
-        self.downstream_task = asyncio.create_task(push_downstream())
+    async def _subscribe(self):
+        """Subscribe the exit async stream to the input"""
+        logger.debug("Subscribing the downstream sink to the down stream...")
+        await subscribe(self.stream_ops, self.sink)
 
 
 class MqttClient(mqttc.Client):
@@ -303,21 +82,23 @@ class MqttClient(mqttc.Client):
     functions needed to support the needed functionality.
     """
 
-    def __init__(self, loop, host: str = conf.MQTT_BROKER, port: int = conf.MQTT_PORT):
+    def __init__(self, pub_queue, sub_queue, host: str = conf.MQTT_BROKER, port: int = conf.MQTT_PORT):
         """ Set up the MQTT connection and support for streams.
 
-            :param loop: The async event loop to run the streams functionality on.
+            :param pub_queue: Synchronous queue for messages to be sent
+            :param sub_queue: Synchronous queue for received messages
             :param host: Host device_id of broker.
             :param port: Port to use, defaults to standard.
         """
         super().__init__()
+        self.pub_queue = pub_queue
+        self.sub_queue = sub_queue
         self.host: str = host
         self.port: int = port
         self.on_connect: Callable = self.connect_cb
         self.on_disconnect: Callable = self.disconnect_cb
         self.on_message: Callable = self.message_cb
         self.on_subscribe: Callable = self.subscribe_cb
-        self.streams: MqttInterfaceStreams = MqttInterfaceStreams(loop)
         self.loop_start()
         logger.info("Connecting to MQTT: host=%s; port=%s", host, str(port))
         self.connected = False
@@ -330,11 +111,10 @@ class MqttClient(mqttc.Client):
         super().loop(timeout, max_packets)
 
     def _publish_from_queue(self) -> None:
-        """Publish all the messages available in the downstream queue"""
-        queue = self.streams.downstream_queue.sync_q
-        while not queue.empty():
+        """Publish all the messages available in the publish queue"""
+        while not self.pub_queue.empty():
             try:
-                message = queue.get(False)
+                message = self.pub_queue.get(False)
                 self.publish(message['topic'], message['message'])
             except Empty:
                 return
@@ -371,7 +151,7 @@ class MqttClient(mqttc.Client):
     def message_cb(self, client: mqttc.Client, user_data: Dict[str, Any], message: mqttc.MQTTMessage):
         """Called when a message is received on a subscribed-to topic. Places the topic + message in the up stream"""
         logger.debug("Message received: topic=%s; message=%s", message.topic, message.payload)
-        self.streams.upstream_queue.sync_q.put_nowait({'topic': message.topic, 'message': message.payload})
+        self.sub_queue.put_nowait({'topic': message.topic, 'message': message.payload})
 
     # noinspection PyUnusedLocal,PyMethodMayBeStatic
     def subscribe_cb(self, client: mqttc.Client, user_data: Dict[str, Any], mid: Any, granted_qos: List[int]):

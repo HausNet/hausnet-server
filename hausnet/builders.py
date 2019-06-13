@@ -1,19 +1,9 @@
-##
-# Classes to build devices of different types, wire them up, and, provide convenient lookups to devices without
-# needing to traverse device tree.
-#
-# TODO: Figure out if blueprint errors should be logged / should break process (it's breaking now)
-#
-import asyncio
 from abc import ABC, abstractmethod
-from typing import Dict, Any
-import logging
-
-from aioreactive.core import AsyncObservable, AsyncStream, AsyncObserver, subscribe, AsyncAnonymousObserver
+from typing import cast
 
 from hausnet.devices import NodeDevice, BasicSwitch, CompoundDevice, Device, SubDevice, RootDevice
 from hausnet.operators.operators import HausNetOperators as Op
-from hausnet.flow import TOPIC_DOWNSTREAM_APPENDIX, FromBufferAsyncStream, MqttClient, DeviceInterfaceStreams
+from hausnet.flow import *
 
 log = logging.getLogger(__name__)
 
@@ -24,40 +14,44 @@ class BuilderError(Exception):
 
 
 class DeviceInterface:
-    """ A class binding together everything needed to work with a device: The device itself; Its upstream stream and
-    upstream terminal queue; its downstream data stream and terminal queue. The up/down-streams are asynchronous
-    aioreactive streams, composed of sources, and intervening operations.
+    """ A class binding together everything needed to work with a device: The device itself; Its upstream and
+    downstream data streams.
     """
-
-    # The event loop, stays the same for everything
-    loop = None
-
     def __init__(
             self,
             device: (Device, CompoundDevice),
-            up_stream: AsyncObservable,
-            down_stream: AsyncStream
+            up_stream: (MessageStream, None),
+            down_stream: (MessageStream, None)
     ):
         """Set up the components
 
         :param device:      The device object, capturing the static structure of the device and its owner / sub-devices
-        :param loop:        The async loop to run async operations on
-        :param up_stream:   An aioreactive Observable composed of a data source and chained operations
-        :param down_stream: An aioreactive Observable composed of chained operations, with an AsyncStream as its source
+        :param up_stream:   A MessageStream managing upstream data flow
+        :param down_stream: A MessageStream managing downstream data flow
         """
         self.device: (Device, CompoundDevice) = device
-        stream: DeviceInterfaceStreams = DeviceInterfaceStreams(self.loop, up_stream, down_stream)
+        self.up_stream = up_stream
+        self.down_stream = down_stream
+
+    def cancel_tasks(self):
+        """Convenience function for testing, cancels all the tasks part of streaming in this bundle"""
+        self.up_stream.out_task.cancel()
+        self.up_stream.source.stream_task.cancel()
+        self.down_stream.out_task.cancel()
+        self.down_stream.source.stream_task.cancel()
 
 
 class DeviceBuilder(ABC):
-    """Builds a specific device from configuration. Each concrete device type should have a corresponding builder.
-    TODO: Consider moving the sources and sinks out of the low-level building, since they are the same for all devices.
-    """
+    """Builds a specific device from configuration. Each concrete device type should have a corresponding builder."""
+    upstream_source: AsyncStreamFromQueue
+    downstream_sink: AsyncStreamToQueue
 
-    def __init__(self, upstream_source: AsyncObservable, downstream_sink: AsyncStream):
-        """Constructor capturing the source of upstream data flows"""
-        self.upstream_source = upstream_source
-        self.downstream_sink = downstream_sink
+    def __init__(self, loop):
+        """Constructor capturing the source of upstream data flows
+
+        :param loop: The event loop to run async operations on
+        """
+        self.loop = loop
 
     @abstractmethod
     def from_blueprint(self, blueprint: Dict[str, Any], owner: CompoundDevice = None) -> DeviceInterface:
@@ -104,20 +98,35 @@ class BasicSwitchBuilder(DeviceBuilder):
         """
         device = BasicSwitch(blueprint['device_id'])
         device.owner_device = owner
-        up_stream = (
+        upstream_ops = (
             self.upstream_source
-            | Op.filter(lambda msg: msg['topic'].startswith(device.get_node().topic_prefix()))
-            | Op.map(lambda msg: device.get_node().coder.decode(msg['message']))
-            | Op.filter(lambda msg_dict, device_id=device.device_id: device_id in msg_dict)
-            | Op.map(lambda msg_dict, device_id=device.device_id: msg_dict[device_id])
+            | Op.filter(lambda msg, dev=device: msg['topic'].startswith(dev.get_node().topic_prefix()))
+            | Op.map(lambda msg, dev=device: dev.get_node().coder.decode(msg['message']))
+            | Op.filter(lambda msg_dict, dev=device: dev.device_id in msg_dict)
+            | Op.map(lambda msg_dict, dev=device: msg_dict[dev.device_id])
             | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
         )
-        downstream_topic = f'{device.get_node().topic_prefix()}{TOPIC_DOWNSTREAM_APPENDIX}'
-        down_stream = (
-            AsyncStream()
-            | Op.map(lambda msg: {device.device_id: msg})
-            | Op.map(lambda msg: device.get_node().coder.encode(msg))
-            | Op.map(lambda msg: {'topic': downstream_topic, 'message': msg})
+        up_stream = MessageStream(
+            self.loop,
+            self.upstream_source,
+            upstream_ops,
+            AsyncStreamToQueue(asyncio.Queue(loop=self.loop))
+        )
+        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(self.loop))
+        downstream_ops = (
+            downstream_source
+            | Op.map(lambda msg, dev=device: {dev.device_id: msg})
+            | Op.map(lambda msg, dev=device: dev.get_node().coder.encode(msg))
+            | Op.map(lambda msg, dev=device: {
+                'topic': topic_name(f'{dev.get_node().topic_prefix()}', TOPIC_DIRECTION_DOWNSTREAM),
+                'message': msg
+            })
+        )
+        down_stream = MessageStream(
+            self.loop,
+            downstream_source,
+            downstream_ops,
+            self.downstream_sink
         )
         return DeviceInterface(device, up_stream, down_stream)
 
@@ -138,7 +147,8 @@ class NodeDeviceBuilder(DeviceBuilder):
         Building the constituent devices is left to the routine that built the node device.
     """
     def from_blueprint(self, blueprint: Dict[str, Any], owner: CompoundDevice = None) -> DeviceInterface:
-        """Given a plan dictionary as above, construct the device. The operations on the input (MQTT) data stream are:
+        """Given a plan dictionary as above, construct the device. The operations on the input (MQTT) data
+            stream are:
             1. The main data stream is filtered for messages on the node's upstream topic;
             2. Then, messages are decoded to a dictionary format from, e.g, JSON;
         At its end, the upstream flow presents an Observable for use by clients. This flow contains just messages
@@ -149,19 +159,37 @@ class NodeDeviceBuilder(DeviceBuilder):
         :returns: The device bundle for a node.
 
         TODO: Deal with module configuration messages
+        TODO: Common first part of upstream & last of downstream - worth making generic? E.g. topic name can be
+              derived, it need not be specified per device.
+        TODO: DRY failure? Stream ops for all devices of the same type should be the same?
         """
         device = NodeDevice(blueprint['device_id'])
-        up_stream = (
+        upstream_ops = (
                 self.upstream_source
-                | Op.filter(lambda msg: msg['topic'].startswith(device.topic_prefix()))
-                | Op.map(lambda msg: device.coder.decode(msg['message']))
+                | Op.filter(lambda msg, dev=device: msg['topic'].startswith(dev.topic_prefix()))
+                | Op.map(lambda msg, dev=device: dev.coder.decode(msg['message']))
         )
-        downstream_topic = f'{device.get_node().topic_prefix()}{TOPIC_DOWNSTREAM_APPENDIX}'
-        down_stream = (
-            AsyncStream()
-            | Op.map(lambda msg: {device.device_id: msg})
-            | Op.map(lambda msg: device.get_node().coder.encode(msg))
-            | Op.map(lambda msg: {'topic': downstream_topic, 'message': msg})
+        up_stream = MessageStream(
+            self.loop,
+            self.upstream_source,
+            upstream_ops,
+            AsyncStreamToQueue(asyncio.Queue())
+        )
+        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(self.loop))
+        downstream_ops = (
+            downstream_source
+            | Op.map(lambda msg, dev=device: {dev.device_id: msg})
+            | Op.map(lambda msg, dev=device: dev.get_node().coder.encode(msg))
+            | Op.map(lambda msg, dev=device: {
+                'topic': f'{dev.get_node().topic_prefix()}{TOPIC_DOWNSTREAM_APPENDIX}',
+                'message': msg
+              })
+        )
+        down_stream = MessageStream(
+            self.loop,
+            downstream_source,
+            downstream_ops,
+            self.downstream_sink
         )
         return DeviceInterface(device, up_stream, down_stream)
 
@@ -169,34 +197,32 @@ class NodeDeviceBuilder(DeviceBuilder):
 class DevicePlantBuilder:
     """Builds all the devices in the device tree, with a RootDevice at the root of the tree."""
 
-    def __init__(self, loop, upstream_source: AsyncObservable, downstream_sink: AsyncStream):
-        """Prep the builders.
+    def __init__(self, loop):
+        """Build the whole plant recursively, employing type-specific builders as needed.
 
-        :param upstream_source: Source for data flowing upstream, to serve as source for the device's upstream data
-                                streams. Outside of testing, this will be the MQTT async subscriber to all HausNet
-                                topics.
+        :param loop: The async event loop to run the plant on.
         """
         self.loop = loop
-        self.upstream_source = upstream_source
-        self.downstream_sink = downstream_sink
-        self.builders = DeviceBuilderRegistry(upstream_source, downstream_sink)
-        self.mqtt_client: MqttClient = MqttClient(self.loop)
-        self.upstream_source = self.mqtt_client.streams.upstream_src
-        self.downstream_sink = self.mqtt_client.streams.downstream_sink
+        upstream_in_queue = janus.Queue(loop)
+        upstream_source = AsyncStreamFromQueue(loop, cast(asyncio.Queue, upstream_in_queue.async_q))
+        downstream_out_queue = janus.Queue(loop)
+        downstream_sink = AsyncStreamToQueue(cast(asyncio.Queue, downstream_out_queue.async_q))
+        self.builders = DeviceBuilderRegistry(loop, upstream_source, downstream_sink)
+        self.mqtt_client: MqttClient = MqttClient(downstream_out_queue.sync_q, upstream_in_queue.sync_q)
 
     def build(self, blueprint: Dict[str, Any]) -> Dict[str, DeviceInterface]:
-        """Steps through the blueprint components and build a device, and an upstream and downstream stream for each.
-        The result is a full instantiation of every device in the plant (from config), wired up in the correct
-        owner / sub-device relationships (through CompoundDevice's sub_devices and SubDevice's owner_device), organized
-        into a dictionary of device bundles that are accessible by the fully qualified device name. Note that the
-        'root' bundle contains the RootDevice that forms the root of the whole device tree.
+        """Steps through the blueprint components and build a device, and an upstream and downstream stream
+        for each. The result is a full instantiation of every device in the plant (from config), wired up in the
+        correct owner / sub-device relationships (through CompoundDevice's sub_devices and SubDevice's owner_device),
+        organized into a dictionary of device bundles that are accessible by the fully qualified device name. Note
+        that the 'root' bundle contains the RootDevice that forms the root of the whole device tree.
 
         TODO: Consider whether to combine all the device bundles' upstreams into the root observable
 
-        :param blueprint:       Blueprint, of the whole plant, as a dictionary
+        :param blueprint: Blueprint, of the whole plant, as a dictionary
         :return: A dictionary of device bundles.
         """
-        root = DeviceInterface(RootDevice(), self.upstream_source, self.downstream_sink)
+        root = DeviceInterface(RootDevice(), None, None)
         bundles = self._from_blueprints(blueprint, root.device)
         bundles['root'] = root
         return bundles
@@ -231,17 +257,18 @@ class DevicePlantBuilder:
 class DeviceBuilderRegistry:
     """Maps device type handles to their builders"""
 
-    def __init__(self, upstream_source: AsyncObservable, downstream_sink: AsyncObservable):
+    def __init__(self, loop, upstream_source: AsyncStreamFromQueue, downstream_sink: AsyncStreamToQueue):
         """Initialize the registry with the source needed by all builders to construct data streams. The self.registry
         variable holds all the device handle -> class mappings, and should be amended as new devices are defined.
 
-        TODO: Mapping should be automatable (?)
-
-        :param source: In non-test environments, the MQTT subscriber to all HausNet messages.
+        :param upstream_source: The one shared source of all incoming MQTT messages.
+        :param downstream_sink: The one shared sink for all outgoing MQTT messages.
         """
+        DeviceBuilder.downstream_sink = downstream_sink
+        DeviceBuilder.upstream_source = upstream_source
         self.registry: Dict[str, DeviceBuilder] = {
-            'node':         NodeDeviceBuilder(upstream_source, downstream_sink),
-            'basic_switch': BasicSwitchBuilder(upstream_source, downstream_sink)
+            'node':         NodeDeviceBuilder(loop),
+            'basic_switch': BasicSwitchBuilder(loop)
         }
 
     def builder_for(self, type_handle: str) -> DeviceBuilder:

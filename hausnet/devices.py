@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List
 
 from hausnet.coders import JsonCoder
-from hausnet.flow import SyncToAsyncBufferedStream, TOPIC_NAMESPACE
+from hausnet.flow import TOPIC_NAMESPACE
 from hausnet.states import *
 
 
@@ -146,7 +146,7 @@ class ControlDevice(ABC):
         confirms the new state). Turns the state change request into a message, then places it into a central
         (class-wide) message buffer for further processing and eventual delivery to the device.
     """
-    control_buffer: SyncToAsyncBufferedStream = None
+    control_buffer = None
 
     def __init__(self):
         # noinspection PyTypeChecker

@@ -4,14 +4,17 @@ import unittest
 
 from aioreactive.core import subscribe, AsyncAnonymousObserver, AsyncObservable, AsyncStream
 
-from hausnet.builders import DevicePlantBuilder
+from hausnet.builders import DevicePlantBuilder, DeviceBuilder
 from hausnet.devices import NodeDevice, BasicSwitch
-from hausnet.flow import FixedSyncToAsyncBufferedStream
+from hausnet.flow import *
 from hausnet.states import OnOffState
 
 
 class DeviceBuilderTests(unittest.TestCase):
     """Test the building of the device tree"""
+
+    def setUpClass(cls) -> None:
+        cls.loop = asyncio.new_event_loop()
 
     def test_can_build_single_node_with_single_device(self):
         """Can a basic node + device be built?"""
@@ -131,22 +134,28 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         }
-        loop = asyncio.new_event_loop()
-        source = FixedSyncToAsyncBufferedStream(loop, 2)
-        bundles = DevicePlantBuilder(source).build(blueprint)
-        source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_1": {"state": "OFF"}}'})
-        source.buffer({'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_2": {"state": "ON"}}'})
-
-        async def message_dump(message):
-            print(message)
+        bundles = DevicePlantBuilder(self.loop).build(blueprint)
+        messages = [
+            {'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_1": {"state": "OFF"}}'},
+            {'topic': 'hausnet/test/ABC123/upstream', 'message': '{"switch_2": {"state": "ON"}}'}
+        ]
+        out_messages = []
 
         async def main():
-            await subscribe(bundles['test_node.test_switch_1'].up_stream, AsyncAnonymousObserver(message_dump))
-            await subscribe(bundles['test_node.test_switch_2'].up_stream, AsyncAnonymousObserver(message_dump))
-            await source.stream()
+            in_queue = DeviceBuilder.upstream_source.queue
+            for message in messages:
+                await in_queue.put(message)
+            while in_queue.qsize() > 0:
+                logger.debug("Upstream in-queue size: %s", str(in_queue.qsize()))
+                await asyncio.sleep(0.01)
+            await out_messages.append(bundles['test_switch_1'].up_stream.sink.queue.get())
+            bundles['test_switch_1'].up_stream.sink.queue.task_done()
+            await out_messages.append(bundles['test_switch_2'].up_stream.sink.queue.get())
+            bundles['test_switch_2'].up_stream.sink.queue.task_done()
+            for bundle_key in bundles:
+                bundles[bundle_key].cancel_tasks()
 
-        loop.run_until_complete(main())
-        loop.close()
+        self.loop.run_until_complete(main())
         self.assertEqual(
             bundles['test_node.test_switch_1'].device.state.value,
             OnOffState.OFF,
@@ -172,7 +181,6 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         }
-        loop = asyncio.new_event_loop()
         source = AsyncStream()
         sink = AsyncStream()
         bundles = DevicePlantBuilder(source, sink).build(blueprint)
@@ -188,8 +196,7 @@ class DeviceBuilderTests(unittest.TestCase):
             for msg in [{'state': 'ON'}, {'state': 'OFF'}]:
                 await sink.asend(msg)
 
-        loop.run_until_complete(main())
-        loop.close()
+        self.loop.run_until_complete(main())
         self.assertEqual(
             msg_bucket[0],
             {'topic': 'hausnet/test_node/ABC123/downstream', 'message': '{"test_switch":{"state": "OFF"}}'},

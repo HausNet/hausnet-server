@@ -27,9 +27,9 @@ class JsonCoder(Coder):
     def decode(cls, json_str: str) -> Dict[str, Any]:
         """ Turns a JSON string into a dict
 
-            :param json_str: A JSON string to be decoded into a dictionary
-            :returns: A dictionary object representing the JSON
-            :except: Passes on JSON decoding exceptions - have to be handled at a higher level.
+        :param json_str: A JSON string to be decoded into a dictionary
+        :returns: A dictionary object representing the JSON
+        :except: Passes on JSON decoding exceptions - have to be handled at a higher level.
         """
         try:
             return json.loads(json_str)
@@ -41,12 +41,11 @@ class JsonCoder(Coder):
     def encode(cls, json_obj: Any) -> str:
         """ Encode a dictionary object as a JSON string.
 
-            :param json_obj: Object containing real data structure.
-            :return: The data structure rendered as JSON
-
+        :param json_obj: Object containing real data structure.
+        :return: The data structure rendered as JSON
         """
         try:
-            return json.dumps(json_obj)
+            return json.dumps(json_obj, separators=(',', ':'))
         except (ValueError, TypeError) as e:
             logger.error("JSON encoding failed for: %s", object)
             raise e
