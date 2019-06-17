@@ -17,6 +17,10 @@ class DeviceInterface:
     """ A class binding together everything needed to work with a device: The device itself; Its upstream and
     downstream data streams.
     """
+    # Convenience access to the Janus queues that sits at the MQTT side. Mostly needed for testing.
+    upstream_src_queue: janus.Queue
+    downstream_dest_queue: janus.Queue
+
     def __init__(
             self,
             device: (Device, CompoundDevice),
@@ -203,12 +207,15 @@ class DevicePlantBuilder:
         :param loop: The async event loop to run the plant on.
         """
         self.loop = loop
-        upstream_in_queue = janus.Queue(loop)
-        upstream_source = AsyncStreamFromQueue(loop, cast(asyncio.Queue, upstream_in_queue.async_q))
-        downstream_out_queue = janus.Queue(loop)
-        downstream_sink = AsyncStreamToQueue(cast(asyncio.Queue, downstream_out_queue.async_q))
+        DeviceInterface.upstream_src_queue = janus.Queue(loop=loop)
+        upstream_source = AsyncStreamFromQueue(loop, cast(asyncio.Queue, DeviceInterface.upstream_src_queue.async_q))
+        DeviceInterface.downstream_dest_queue = janus.Queue(loop=loop)
+        downstream_sink = AsyncStreamToQueue(cast(asyncio.Queue, DeviceInterface.downstream_dest_queue.async_q))
         self.builders = DeviceBuilderRegistry(loop, upstream_source, downstream_sink)
-        self.mqtt_client: MqttClient = MqttClient(downstream_out_queue.sync_q, upstream_in_queue.sync_q)
+        self.mqtt_client: MqttClient = MqttClient(
+            DeviceInterface.downstream_dest_queue.sync_q,
+            DeviceInterface.upstream_src_queue.sync_q
+        )
 
     def build(self, blueprint: Dict[str, Any]) -> Dict[str, DeviceInterface]:
         """Steps through the blueprint components and build a device, and an upstream and downstream stream
