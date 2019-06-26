@@ -1,8 +1,7 @@
 from typing import cast
-import asyncio
 import unittest
 
-from hausnet.builders import DevicePlantBuilder, DeviceBuilder, DeviceInterface
+from hausnet.builders import DevicePlantBuilder, DeviceInterface
 from hausnet.devices import NodeDevice, BasicSwitch
 from hausnet.flow import *
 from hausnet.states import OnOffState
@@ -29,6 +28,8 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
+        for interface_key in interfaces:
+            interfaces[interface_key].cancel_tasks()
         self.assertEqual(len(interfaces), 3, "Expected 3 device interfaces")
         root = interfaces['root'].device
         self.assertEqual(len(root.sub_devices), 1, "Expected one device at the root of the tree")
@@ -77,6 +78,8 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
+        for interface_key in interfaces:
+            interfaces[interface_key].cancel_tasks()
         # interfaces
         self.assertEqual(len(interfaces), 8, "Expected 8 device interfaces")
         # Test nodes
@@ -146,11 +149,11 @@ class DeviceBuilderTests(unittest.TestCase):
                 in_queue.put(message)
             while in_queue.qsize() > 0:
                 logger.debug("Upstream in-queue size: %s", str(in_queue.qsize()))
-                await asyncio.sleep(0.01)
-            await out_messages.append(interfaces['test_switch_1'].up_stream.sink.queue.get())
-            interfaces['test_switch_1'].up_stream.sink.queue.task_done()
-            await out_messages.append(interfaces['test_switch_2'].up_stream.sink.queue.get())
-            interfaces['test_switch_2'].up_stream.sink.queue.task_done()
+                await asyncio.sleep(0.01, loop=self.loop)
+            out_messages.append(await interfaces['test_node.test_switch_1'].up_stream.sink.queue.get())
+            interfaces['test_node.test_switch_1'].up_stream.sink.queue.task_done()
+            out_messages.append(await interfaces['test_node.test_switch_2'].up_stream.sink.queue.get())
+            interfaces['test_node.test_switch_2'].up_stream.sink.queue.task_done()
             for interface_key in interfaces:
                 interfaces[interface_key].cancel_tasks()
 
@@ -170,39 +173,43 @@ class DeviceBuilderTests(unittest.TestCase):
         """Test that a basic switch state changes get delivered to the MQTT end of the stream"""
         blueprint = {
             'test_node': {
-                'type': 'node',
+                'type':      'node',
                 'device_id': 'test/ABC123',
                 'devices': {
                     'test_switch': {
-                        'type': 'basic_switch',
+                        'type':      'basic_switch',
                         'device_id': 'switch_1',
                     },
                 }
             }
         }
-        source = AsyncStream()
-        sink = AsyncStream()
         interfaces = DevicePlantBuilder(self.loop).build(blueprint)
-        msg_bucket = []
-
-        async def message_dump(message):
-            print(message)
-            msg_bucket.append(message)
+        messages = [{'state': 'ON'}, {'state': 'OFF'}]
+        out_messages = []
 
         async def main():
-            await subscribe(interfaces['test_node.test_switch'].down_stream, AsyncAnonymousObserver(message_dump))
-
-            for msg in [{'state': 'ON'}, {'state': 'OFF'}]:
-                await sink.asend(msg)
+            in_queue = interfaces['test_node.test_switch'].down_stream.source.queue
+            for message in messages:
+                await in_queue.put(message)
+            while not in_queue.empty():
+                logger.debug("Downstream in-queue size: %s", str(in_queue.qsize()))
+                await asyncio.sleep(0.1, loop=self.loop)
+            for interface_key in interfaces:
+                interfaces[interface_key].cancel_tasks()
 
         self.loop.run_until_complete(main())
+        out_stream = DeviceInterface.downstream_dest_queue.sync_q
+        out_messages.append(out_stream.get())
+        out_stream.task_done()
+        out_messages.append(out_stream.get())
+        out_stream.task_done()
         self.assertEqual(
-            msg_bucket[0],
-            {'topic': 'hausnet/test_node/ABC123/downstream', 'message': '{"test_switch":{"state": "OFF"}}'},
-            "Expected an 'OFF' JSON message on topic ''hausnet/test_node/ABC123/downstream'"
+            out_messages[0],
+            {'topic': 'hausnet/test/ABC123/downstream', 'message': '{"switch_1":{"state":"ON"}}'},
+            "Expected an 'ON' JSON message on topic 'hausnet/test/ABC123/downstream'"
         )
         self.assertEqual(
-            msg_bucket[1],
-            {'topic': 'hausnet/test_node/ABC123/downstream', 'message': '{"test_switch":{"state": "ON"}}'},
-            "Expected an 'ON' JSON message on topic ''hausnet/test_node/ABC123/downstream'"
+            out_messages[1],
+            {'topic': 'hausnet/test/ABC123/downstream', 'message': '{"switch_1":{"state":"OFF"}}'},
+            "Expected an 'OFF' JSON message on topic 'hausnet/test/ABC123/downstream'"
         )

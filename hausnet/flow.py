@@ -1,11 +1,11 @@
 from queue import Empty
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List
 import asyncio
 import logging
+import queue
 
 import paho.mqtt.client as mqttc
-from aioreactive.core import AsyncStream, subscribe, AsyncAnonymousObserver, AsyncObservable
-import janus
+from aioreactive.core import AsyncStream, subscribe
 
 from hausnet.config import conf
 
@@ -41,8 +41,8 @@ class AsyncStreamFromQueue(AsyncStream):
         while True:
             logger.debug("Awaiting message from queue...")
             message = await self.queue.get()
-            await self.asend(message)
             self.queue.task_done()
+            await self.asend(message)
             logger.debug("Sent message from queue: %s", str(message))
 
 
@@ -52,15 +52,15 @@ class AsyncStreamToQueue(AsyncStream):
         super().__init__()
         self.queue = sink_queue
 
-    async def asend(self, value):
+    async def asend(self, value) -> None:
         logger.debug("Received value, putting in queue")
         await self.queue.put(value)
 
 
 class MessageStream:
-    """Encapsulates one-directional data flow from the API to the network (MQTT)."""
+    """Encapsulates one-directional data flow between the API to and the MQTT network."""
 
-    def __init__(self, loop, source: AsyncStreamFromQueue, stream_ops: AsyncStream, sink: AsyncStreamToQueue):
+    def __init__(self, loop, source: AsyncStreamFromQueue, stream_ops: AsyncStream, sink: AsyncStreamToQueue) -> None:
         """Sets up subscribing the given stream to the given sink via an async task.
 
         :param stream_ops: An async stream with a source and chained operations.
@@ -71,18 +71,24 @@ class MessageStream:
         self.sink = sink
         self.out_task = loop.create_task(self._subscribe())
 
-    async def _subscribe(self):
+    async def _subscribe(self) -> None:
         """Subscribe the exit async stream to the input"""
         logger.debug("Subscribing the downstream sink to the down stream...")
         await subscribe(self.stream_ops, self.sink)
 
 
 class MqttClient(mqttc.Client):
-    """ Manages MQTT communication for the HausNet environment. Constrains the Pentaho client to just those
+    """ Manages MQTT communication for the HausNet environment. Constrains the Paho client to just those
     functions needed to support the needed functionality.
     """
 
-    def __init__(self, pub_queue, sub_queue, host: str = conf.MQTT_BROKER, port: int = conf.MQTT_PORT):
+    def __init__(
+            self,
+            pub_queue: queue.Queue,
+            sub_queue: queue.Queue,
+            host: str = conf.MQTT_BROKER,
+            port: int = conf.MQTT_PORT
+    ) -> None:
         """ Set up the MQTT connection and support for streams.
 
             :param pub_queue: Synchronous queue for messages to be sent
@@ -91,24 +97,22 @@ class MqttClient(mqttc.Client):
             :param port: Port to use, defaults to standard.
         """
         super().__init__()
-        self.pub_queue = pub_queue
-        self.sub_queue = sub_queue
+        self.pub_queue: queue.Queue = pub_queue
+        self.sub_queue: queue.Queue = sub_queue
         self.host: str = host
         self.port: int = port
-        self.on_connect: Callable = self.connect_cb
-        self.on_disconnect: Callable = self.disconnect_cb
-        self.on_message: Callable = self.message_cb
-        self.on_subscribe: Callable = self.subscribe_cb
-        self.loop_start()
         logger.info("Connecting to MQTT: host=%s; port=%s", host, str(port))
         self.connected = False
         self.connect(host, port)
+        self.loop_start()
 
-    def loop(self, timeout: float = 1.0, max_packets: int = 1) -> None:
+    def loop(self, timeout: float = 1.0, max_packets: int = 1):
         """Override the parent class to check for new messages. If there are messages in the upstream queue,
-        publish them all, then let the parent's loop() have a go"""
-        self._publish_from_queue()
-        super().loop(timeout, max_packets)
+        publish them all, then let the parent's loop() have a go
+        """
+        if self.connected:
+            self._publish_from_queue()
+        return super().loop(timeout, max_packets)
 
     def _publish_from_queue(self) -> None:
         """Publish all the messages available in the publish queue"""
@@ -119,25 +123,25 @@ class MqttClient(mqttc.Client):
             except Empty:
                 return
 
-    def subscribe_to_network(self):
+    def _subscribe_to_network(self):
         """Subscribes to all topics nodes in the network will publish to"""
-        logger.debug("Connecting to topic: %s", TOPICS_SUBSCRIBED_TO)
+        logger.debug("Subscribing to topic(s): %s", TOPICS_SUBSCRIBED_TO)
         self.subscribe(TOPICS_SUBSCRIBED_TO)
 
-    # noinspection PyUnusedLocal
-    def connect_cb(self, client: mqttc.Client, user_data: Dict[str, Any], flags: Dict[str, Any], rc: str):
+    # noinspection PyUnusedLocal,PyMethodOverriding
+    def on_connect(self, client: mqttc.Client, user_data: Dict[str, Any], flags: Dict[str, Any], rc: str):
         """On connection failure, reconnect"""
         if rc == mqttc.CONNACK_ACCEPTED:
             logger.info("MQTT connected.")
             self.connected = True
-            self.subscribe_to_network()
+            self._subscribe_to_network()
             return
         logger.error("MQTT connection failed: code=%s; text=%s. Retrying...", str(rc), mqttc.connack_string(rc))
         self.connected = False
         self.reconnect()
 
-    # noinspection PyUnusedLocal
-    def disconnect_cb(self, client: mqttc.Client, user_data: Dict[str, Any], rc: str):
+    # noinspection PyUnusedLocal,PyMethodOverriding
+    def on_disconnect(self, client: mqttc.Client, user_data: Dict[str, Any], rc: str):
         """Just set the manager's connected flag and log the reason"""
         logger.error(
             "MQTT unexpectedly disconnected: code=%s; text=%s. Retrying...",
@@ -147,13 +151,13 @@ class MqttClient(mqttc.Client):
         self.connected = False
         self.reconnect()
 
-    # noinspection PyUnusedLocal
-    def message_cb(self, client: mqttc.Client, user_data: Dict[str, Any], message: mqttc.MQTTMessage):
+    # noinspection PyUnusedLocal,PyMethodOverriding
+    def on_message(self, client: mqttc.Client, user_data: Dict[str, Any], message: mqttc.MQTTMessage):
         """Called when a message is received on a subscribed-to topic. Places the topic + message in the up stream"""
         logger.debug("Message received: topic=%s; message=%s", message.topic, message.payload)
         self.sub_queue.put_nowait({'topic': message.topic, 'message': message.payload})
 
-    # noinspection PyUnusedLocal,PyMethodMayBeStatic
-    def subscribe_cb(self, client: mqttc.Client, user_data: Dict[str, Any], mid: Any, granted_qos: List[int]):
+    # noinspection PyUnusedLocal,PyMethodMayBeStatic,PyMethodOverriding
+    def on_subscribe(self, client: mqttc.Client, user_data: Dict[str, Any], mid: Any, granted_qos: List[int]):
         """Called when subscription succeeds"""
         logger.debug("Subscription succeeded")

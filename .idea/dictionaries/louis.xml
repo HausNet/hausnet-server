@@ -7,6 +7,7 @@
       <w>asubscribe</w>
       <w>asyncio</w>
       <w>backgrounding</w>
+      <w>hass</w>
       <w>haus</w>
       <w>hausnet</w>
       <w>hausnode</w>
@@ -15,6 +16,7 @@
       <w>mosquitto</w>
       <w>mqtt</w>
       <w>mqttc</w>
+      <w>othervendor</w>
       <w>paho</w>
       <w>pentaho</w>
       <w>pydocstyle</w>

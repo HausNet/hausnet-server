@@ -1,188 +1,254 @@
 import unittest
-import unittest.mock as mock
-import subprocess
-import time
+import queue
 import asyncio
-from typing import List, Dict
+from typing import cast
+import logging
 
-from aioreactive.core import AsyncStream, subscribe, AsyncIteratorObserver, AsyncAnonymousObserver, AsyncObservable
-from aioreactive.core import Operators as op
-from aioreactive.operators import from_iterable
-from hausnet import flow
-from hausnet import coders
-from hausnet import devices
-from hausnet.config import conf
-from hausnet.flow import MqttClient, SyncToAsyncBufferedStream
-from hausnet.flow import FixedSyncToAsyncBufferedStream
+import janus
 
+from hausnet.devices import NodeDevice, BasicSwitch, OnOffState
+from hausnet.flow import (
+    topic_name, TOPIC_DIRECTION_DOWNSTREAM, AsyncStreamToQueue, AsyncStreamFromQueue, MessageStream, MqttClient
+)
+from hausnet.operators.operators import HausNetOperators as Op
+from hausnet.coders import JsonCoder
 
-def send_mqtt_message(topic: str, payload: str):
-    """ Convenience function to send an MQTT message via the external mosquitto publication client.
-
-        :param topic:   Where to send message to.
-        :param payload: The actual message.
-    """
-    subprocess.check_call([
-        'mosquitto_pub',
-        '-h', conf.MQTT_BROKER,
-        '-t', topic,
-        '-m', payload
-    ])
-
-
-class MqttMessageSourceTests(unittest.TestCase):
-    """Test behaviour as a buffering observable"""
-    message_log = []
-
-    async def process_messages(self, client: MqttClient, msg_count: int):
-        while True:
-            packet = await asyncio.wait_for(client.upstreamQueue.queue.get(), 1)
-            self.message_log.append(packet)
-            if len(self.message_log) >= msg_count:
-                break
-
-    def test_has_iterable_queue(self):
-        """ Test that the MqttClient's message receive janus_queue is iterable
-        """
-        self.message_log = []
-
-        client = MqttClient()
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_1', 'message': 'my_message_1'})
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_2', 'message': 'my_message_2'})
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_3', 'message': 'my_message_3'})
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.process_messages(client, 3))
-        loop.close()
-        self.assertEqual(self.message_log[0], {'topic': 'topic_1', 'message': 'my_message_1'})
-        self.assertEqual(self.message_log[1], {'topic': 'topic_2', 'message': 'my_message_2'})
-        self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
-
-    def test_is_buffering(self):
-        """ Test that the SyncToAsyncBufferedStream buffers messages
-        """
-        self.message_log = []
-
-        async def sink(message):
-            self.message_log.append(message)
-
-        async def main():
-            stream = FixedSyncToAsyncBufferedStream(3)
-            await stream.asend({'topic': 'topic_1', 'message': 'my_message_1'})
-            await stream.asend({'topic': 'topic_2', 'message': 'my_message_2'})
-            await stream.asend({'topic': 'topic_3', 'message': 'my_message_3'})
-            await subscribe(stream, AsyncAnonymousObserver(sink))
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
-        loop.close()
-        self.assertEqual(self.message_log[0], {'topic': 'topic_1', 'message': 'my_message_1'})
-        self.assertEqual(self.message_log[1], {'topic': 'topic_2', 'message': 'my_message_2'})
-        self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
-
-    def test_behaves_as_observable(self):
-        async def observe(message):
-            self.message_log.append(message)
-
-        async def main(source: AsyncObservable):
-                await subscribe(source, AsyncAnonymousObserver(observe))
-
-        self.message_log = []
-        client = MqttClient()
-        client.upstreamQueue.test_message_limit = 3
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_1', 'message': 'my_message_1'})
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_2', 'message': 'my_message_2'})
-        client.upstreamQueue.queue.put_nowait({'topic': 'topic_3', 'message': 'my_message_3'})
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main(client.upstreamSource))
-        loop.close()
-        self.assertEqual(self.message_log[0], {'topic': 'topic_1', 'message': 'my_message_1'})
-        self.assertEqual(self.message_log[1], {'topic': 'topic_2', 'message': 'my_message_2'})
-        self.assertEqual(self.message_log[2], {'topic': 'topic_3', 'message': 'my_message_3'})
-
+logger = logging.getLogger(__name__)
 
 
 class MqttClientTests(unittest.TestCase):
-    """ Test the MQTT communications management
-    """
-    asyncResults = []
+    """Test the MQTT client"""
 
-    def setUp(self):
-        """ Clear the async result collection bucket
+    def test_message_receipt(self):
+        """Test that messages sent are received"""
+        sub_queue = queue.Queue()
+        pub_queue = queue.Queue()
+        MqttClient(pub_queue, sub_queue)
+        pub_queue.put({'topic': 'hausnet/test/ABC123/upstream', 'message': 'hello'})
+        message = sub_queue.get(block=True, timeout=30)
+        self.assertEqual(
+            {'topic': 'hausnet/test/ABC123/upstream', 'message': b'hello'},
+            message,
+            "Expected same message that was sent"
+        )
+
+
+class DownstreamTests(unittest.TestCase):
+    """Test sending command and configuration data downstream"""
+    def setUp(self) -> None:
+        """Creates an event loop to use in the tests, and re-initializes the UpStream class"""
+        self.loop = asyncio.new_event_loop()
+
+    def test_set_device_values(self):
+        """Test that device state changes end up in the downstream buffer"""
+        switches = [BasicSwitch('switch_a'), BasicSwitch('switch_b'), BasicSwitch('switch_c')]
+        NodeDevice('node/ABC123', {'switch_1': switches[0], 'switch_2': switches[1]})
+        NodeDevice('node/456DEF', {'switch_3': switches[2]})
+        out_queue = janus.Queue(loop=self.loop)
+        sink = AsyncStreamToQueue(cast(asyncio.Queue, out_queue.async_q))
+        down_streams = []
+        for switch in switches:
+            topic = topic_name(switch.get_node().topic_prefix(), TOPIC_DIRECTION_DOWNSTREAM)
+            logger.debug("Topic: %s", topic)
+            source = AsyncStreamFromQueue(self.loop, asyncio.Queue(loop=self.loop))
+            stream = (
+                source
+                | Op.map(lambda msg, sw=switch: {sw.device_id: msg})
+                | Op.map(lambda msg, sw=switch: sw.get_node().coder.encode(msg))
+                | Op.map(lambda msg, sw=switch, tp=topic: {'topic': tp, 'message': msg})
+            )
+            down_streams.append(MessageStream(self.loop, source, stream, sink))
+
+        async def main():
+            await down_streams[0].source.queue.put({'state': OnOffState.ON})
+            await down_streams[1].source.queue.put({'state': OnOffState.ON})
+            await down_streams[2].source.queue.put({'state': OnOffState.ON})
+            await down_streams[0].source.queue.put({'state': OnOffState.OFF})
+            while out_queue.sync_q.qsize() < 4:
+                await asyncio.sleep(0.01)
+            for down_stream in down_streams:
+                down_stream.out_task.cancel()
+                down_stream.source.stream_task.cancel()
+
+        self.loop.run_until_complete(main())
+        messages = []
+        while not out_queue.sync_q.empty():
+            messages.append(out_queue.sync_q.get())
+        self.assertEqual(4, len(messages), "Expected four messages to be generated by devices")
+        self.assertIn(
+            {'topic': 'hausnet/node/ABC123/downstream', 'message': '{"switch_a":{"state":"ON"}}'},
+            messages,
+            "switch_1 should have 'ON' message"
+        )
+        self.assertIn(
+            {'topic': 'hausnet/node/ABC123/downstream', 'message': '{"switch_a":{"state":"OFF"}}'},
+            messages,
+            "switch_1 should have 'OFF' message"
+        )
+        self.assertIn(
+            {'topic': 'hausnet/node/ABC123/downstream', 'message': '{"switch_b":{"state":"ON"}}'},
+            messages,
+            "switch_2 should have 'ON' message"
+        )
+        self.assertIn(
+            {'topic': 'hausnet/node/456DEF/downstream', 'message': '{"switch_c":{"state":"ON"}}'},
+            messages,
+            "switch_3 should have 'ON' message"
+        )
+
+
+class UpstreamTests(unittest.TestCase):
+    """Test the upstream data flow"""
+    def setUp(self) -> None:
+        """Creates an event loop to use in the tests, and re-initializes the UpStream class"""
+        self.loop = asyncio.new_event_loop()
+
+    def test_node_subscribe_to_topic_stream(self) -> None:
+        """Test that different nodes can subscribe to streams based on their own topics"""
+        node_1 = NodeDevice('vendorname_switch/ABC012')
+        node_2 = NodeDevice('vendorname_heating/345DEF')
+        messages = {'stream_1': [], 'stream_2': []}
+        in_queue = janus.Queue(loop=self.loop)
+        source = AsyncStreamFromQueue(self.loop, cast(asyncio.Queue, in_queue.async_q))
+        # Stream operation: Only forward messages on topics belonging to the node
+        stream_1 = (
+                source
+                | Op.filter(lambda x: x['topic'].startswith(node_1.topic_prefix()))
+        )
+        stream_2 = (
+                source
+                | Op.filter(lambda x: x['topic'].startswith(node_2.topic_prefix()))
+        )
+        up_stream_1 = MessageStream(self.loop, source, stream_1, AsyncStreamToQueue(asyncio.Queue(loop=self.loop)))
+        up_stream_2 = MessageStream(self.loop, source, stream_2, AsyncStreamToQueue(asyncio.Queue(loop=self.loop)))
+        messages = [
+            {'topic': 'hausnet/vendorname_switch/ABC012/upstream', 'message': 'my_message_1'},
+            {'topic': 'hausnet/vendorname_switch/ABC012/downstream', 'message': 'my_message_2'},
+            {'topic': 'ns2/vendorname_switch/ABC012', 'message': 'my_message_3'},
+            {'topic': 'hausnet/vendorname_heating/345DEF', 'message': 'my_message_4'},
+            {'topic': 'hausnet/othervendor_switch/BCD678/downstream', 'message': 'my_message_5'}
+        ]
+        decoded_messages = {}
+
+        async def main():
+            for message in messages:
+                in_queue.sync_q.put(message)
+            while in_queue.async_q.qsize() > 0:
+                logger.debug("Upstream in queue size: %s", str(in_queue.async_q.qsize()))
+                await asyncio.sleep(0.01)
+            for index, up_stream in {1: up_stream_1, 2: up_stream_2}.items():
+                decoded_messages[index] = []
+                while up_stream.sink.queue.qsize() > 0:
+                    decoded_messages[index].append(await up_stream.sink.queue.get())
+                    up_stream.sink.queue.task_done()
+                up_stream.out_task.cancel()
+            source.stream_task.cancel()
+
+        self.loop.run_until_complete(main())
+        self.assertEqual(2, len(decoded_messages[1]), "Expected two messages in stream_1")
+        self.assertEqual(1, len(decoded_messages[2]), "Expected one message in stream_2")
+
+    def test_node_decodes_json(self):
+        """Test that a node can be used to decode JSON"""
+        node = NodeDevice('vendorname_switch/ABC012')
+        node.coder = JsonCoder()
+        in_queue = janus.Queue(loop=self.loop)
+        source = AsyncStreamFromQueue(self.loop, cast(asyncio.Queue, in_queue.async_q))
+        # Stream operations:
+        #   1. Only forward messages on topics belonging to the node
+        #   2. Decode the message from JSON into a dictionary
+        stream = (
+                source
+                | Op.filter(lambda x: x['topic'].startswith(node.topic_prefix()))
+                | Op.map(lambda x: node.coder.decode(x['message']))
+        )
+        up_stream = MessageStream(self.loop, source, stream, AsyncStreamToQueue(asyncio.Queue(loop=self.loop)))
+        message = {
+            'topic':   'hausnet/vendorname_switch/ABC012/upstream',
+            'message': '{"switch": {"state": "OFF", "other": ["ON", "OFF"]}}'
+        }
+        decoded_messages = []
+
+        async def main():
+            in_queue.sync_q.put(message)
+            decoded_messages.append(await up_stream.sink.queue.get())
+            up_stream.sink.queue.task_done()
+            up_stream.source.stream_task.cancel()
+            up_stream.out_task.cancel()
+
+        self.loop.run_until_complete(main())
+        self.assertEqual(1, len(decoded_messages), "Expected one decoded message")
+        self.assertEqual(
+            {'switch': {'state': 'OFF', 'other': ['ON', 'OFF']}},
+            decoded_messages[0],
+            "Decoded message structure expected to reflect JSON structure"
+            )
+
+    def test_device_gets_message(self):
+        """ Test that devices belonging to a node receives messages intended for it
         """
-        MqttClientTests.asyncResults = []
+        node = NodeDevice('vendorname_switch/ABC012')
+        node.coder = JsonCoder()
+        switch_1 = BasicSwitch('switch_1')
+        switch_2 = BasicSwitch('switch_2')
+        node.devices = {
+            'switch_1': switch_1,
+            'switch_2': switch_2,
+        }
+        in_queue = janus.Queue(loop=self.loop)
+        source = AsyncStreamFromQueue(self.loop, cast(asyncio.Queue, in_queue.async_q))
+        up_streams = []
+        for (key, device) in node.devices.items():
+            # Stream operations:
+            #   1. Only forward messages on topics belonging to the node
+            #   2. Decode the message from JSON into a dictionary
+            #   3. Only forward messages to the device that are intended (or partly intended) for it
+            #   4. Pick out the part of the message intended for the device (each root key represents a device)
+            #   5. Tap the stream to store new device state values.
+            up_stream = (
+                    source
+                    | Op.filter(lambda msg: msg['topic'].startswith(node.topic_prefix()))
+                    | Op.map(lambda msg: node.coder.decode(msg['message']))
+                    | Op.filter(lambda msg_dict, device_id=device.device_id: device_id in msg_dict)
+                    | Op.map(lambda msg_dict, device_id=device.device_id: msg_dict[device_id])
+                    | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
+            )
+            up_streams.append(
+                MessageStream(self.loop, source, up_stream, AsyncStreamToQueue(asyncio.Queue(loop=self.loop)))
+            )
+        messages = [
+            {
+                'topic':   'hausnet/vendorname_switch/ABC012/upstream',
+                'message': '{"switch_1": {"state": "OFF"}}'
+            },
+            {
+                'topic':   'hausnet/vendorname_switch/ABC012/upstream',
+                'message': '{"switch_2": {"state": "ON"}}'
+            },
+            {
+                'topic':   'hausnet/vendorname_switch/ABC012/upstream',
+                'message': '{"switch_1": {"state": "UNDEFINED"}}'
+            },
+        ]
+        decoded_messages = []
 
-    @staticmethod
-    def test_message_receipt():
-        """ Test that messages sent are received
-        """
-        mqtt_manager = flow.MqttClient(conf.MQTT_BROKER)
-        listener = mock.MagicMock()
-        mqtt_manager.set_listener(listener)
-        mqtt_manager.run()
-        mqtt_manager.subscribe('test')
-        send_mqtt_message('test', 'hello')
-        i = 0
-        while not listener.called and i < 100:
-            time.sleep(0.1)
-            i += 1
-        listener.assert_called_with('test', 'hello')
+        async def main():
+            for message in messages:
+                in_queue.sync_q.put(message)
+            while in_queue.async_q.qsize() > 0:
+                logger.debug("Upstream in-queue size: %s", str(in_queue.async_q.qsize()))
+                await asyncio.sleep(0.01)
+            for stream in up_streams:
+                while stream.sink.queue.qsize() > 0:
+                    decoded_messages.append(await stream.sink.queue.get())
+                    stream.sink.queue.task_done()
+                stream.out_task.cancel()
+            source.stream_task.cancel()
 
-    @staticmethod
-    async def resultCatcher(value):
-        MqttClientTests.asyncResults.append(value)
-
-    @staticmethod
-    async def upstream_flow(source: AsyncObservable):
-        """ Test pipeline from command input down to the MQTT client
-        """
-        sink = AsyncAnonymousObserver(MqttClientTests.resultCatcher)
-        await subscribe(source, sink)
-
-    @staticmethod
-    async def print_value(value):
-        print(value)
-
-    def test_upstream_flow(self):
-        """ Test that incoming data is streamed reactively
-        """
-        mqtt_client = flow.MqttClient()
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(MqttClientTests.upstream_flow(mqtt_client.upstreamSource))
-        loop.close()
-        self.assertEqual(len(self.asyncResults), 3, "Expected three results")
-        self.assertIn({'topic': 'test', 'message': '{ "device_id": 1, "value": "some_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test', 'message': '{ "device_id": 2, "value": "other_value" }'}, self.asyncResults)
-        self.assertIn({'topic': 'test2', 'message': '{ "device_id": 3, "value": "next_value" }'}, self.asyncResults)
-
-
-class RouterTests(unittest.TestCase):
-    """ Test message routing between the HausNet environment and the external world
-    """
-    @staticmethod
-    async def command_pipeline():
-        """ Test pipeline from command input down to the MQTT client
-        """
-        #router = manager.InterfaceRouter()
-        #node = device.NodeDevice('device_id/AAA000')
-        #switch = device.BasicSwitch('test')
-        #mqtt_client = manager.HausNetMqttClient()
-
-        source = from_iterable([{'device': 'some_device'}, {'device': 'test_switch1'}, {'device': 'test_switch2'}])
-        switch1 = source | op.filter(lambda input: input['device'] == 'test_switch1')
-        switch2 = source | op.filter(lambda input: input['device'] == 'test_switch2')
-        switch3 = source | op.filter(lambda input: input['device'] == 'test_switch1')
-
-        await subscribe(switch1, AsyncAnonymousObserver(RouterTests.print_value))
-        await subscribe(switch2, AsyncAnonymousObserver(RouterTests.print_value))
-        await subscribe(switch3, AsyncAnonymousObserver(RouterTests.print_value))
-
-    @staticmethod
-    async def print_value(value):
-        print(value)
-
-
-    @staticmethod
-    def test_command_pipeline():
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(RouterTests.command_pipeline())
-        loop.close()
+        self.loop.run_until_complete(main())
+        self.assertEqual(3, len(decoded_messages), "Expected device messages")
+        self.assertIn({'state': 'OFF'}, decoded_messages, "'OFF' state should be present")
+        self.assertIn({'state': 'ON'}, decoded_messages, "'ON' state should be present")
+        self.assertIn({'state': 'UNDEFINED'}, decoded_messages, "'UNDEFINED' state should be present'")
+        self.assertEqual('UNDEFINED', switch_1.state.value, "switch_1 state should be 'UNDEFINED'")
+        self.assertEqual('ON', switch_2.state.value, "switch_2 state should be 'ON'")

@@ -17,16 +17,16 @@ class DeviceInterface:
     """ A class binding together everything needed to work with a device: The device itself; Its upstream and
     downstream data streams.
     """
-    # Convenience access to the Janus queues that sits at the MQTT side. Mostly needed for testing.
+    # Convenience access to the (singleton) Janus queues that sits at the MQTT side. Mostly needed for testing.
     upstream_src_queue: janus.Queue
     downstream_dest_queue: janus.Queue
 
     def __init__(
             self,
             device: (Device, CompoundDevice),
-            up_stream: (MessageStream, None),
-            down_stream: (MessageStream, None)
-    ):
+            up_stream: MessageStream,
+            down_stream: MessageStream
+    ) -> None:
         """Set up the components
 
         :param device:      The device object, capturing the static structure of the device and its owner / sub-devices
@@ -34,15 +34,17 @@ class DeviceInterface:
         :param down_stream: A MessageStream managing downstream data flow
         """
         self.device: (Device, CompoundDevice) = device
-        self.up_stream = up_stream
-        self.down_stream = down_stream
+        self.up_stream: MessageStream = up_stream
+        self.down_stream: MessageStream = down_stream
 
     def cancel_tasks(self):
         """Convenience function for testing, cancels all the tasks part of streaming in this bundle"""
-        self.up_stream.out_task.cancel()
-        self.up_stream.source.stream_task.cancel()
-        self.down_stream.out_task.cancel()
-        self.down_stream.source.stream_task.cancel()
+        if self.up_stream:
+            self.up_stream.out_task.cancel()
+            self.up_stream.source.stream_task.cancel()
+        if self.down_stream:
+            self.down_stream.out_task.cancel()
+            self.down_stream.source.stream_task.cancel()
 
 
 class DeviceBuilder(ABC):
@@ -116,7 +118,7 @@ class BasicSwitchBuilder(DeviceBuilder):
             upstream_ops,
             AsyncStreamToQueue(asyncio.Queue(loop=self.loop))
         )
-        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(self.loop))
+        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(loop=self.loop))
         downstream_ops = (
             downstream_source
             | Op.map(lambda msg, dev=device: {dev.device_id: msg})
@@ -179,7 +181,7 @@ class NodeDeviceBuilder(DeviceBuilder):
             upstream_ops,
             AsyncStreamToQueue(asyncio.Queue())
         )
-        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(self.loop))
+        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(loop=self.loop))
         downstream_ops = (
             downstream_source
             | Op.map(lambda msg, dev=device: {dev.device_id: msg})
