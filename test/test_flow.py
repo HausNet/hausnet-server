@@ -12,6 +12,7 @@ from hausnet.flow import (
 )
 from hausnet.operators.operators import HausNetOperators as Op
 from hausnet.coders import JsonCoder
+from test.helpers import AsyncTest
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,8 @@ class MqttClientTests(unittest.TestCase):
         )
 
 
-class DownstreamTests(unittest.TestCase):
+class DownstreamTests(AsyncTest):
     """Test sending command and configuration data downstream"""
-    def setUp(self) -> None:
-        """Creates an event loop to use in the tests, and re-initializes the UpStream class"""
-        self.loop = asyncio.new_event_loop()
 
     def test_set_device_values(self):
         """Test that device state changes end up in the downstream buffer"""
@@ -66,9 +64,6 @@ class DownstreamTests(unittest.TestCase):
             await down_streams[0].source.queue.put({'state': OnOffState.OFF})
             while out_queue.sync_q.qsize() < 4:
                 await asyncio.sleep(0.01)
-            for down_stream in down_streams:
-                down_stream.out_task.cancel()
-                down_stream.source.stream_task.cancel()
 
         self.loop.run_until_complete(main())
         messages = []
@@ -97,11 +92,8 @@ class DownstreamTests(unittest.TestCase):
         )
 
 
-class UpstreamTests(unittest.TestCase):
+class UpstreamTests(AsyncTest):
     """Test the upstream data flow"""
-    def setUp(self) -> None:
-        """Creates an event loop to use in the tests, and re-initializes the UpStream class"""
-        self.loop = asyncio.new_event_loop()
 
     def test_node_subscribe_to_topic_stream(self) -> None:
         """Test that different nodes can subscribe to streams based on their own topics"""
@@ -141,8 +133,6 @@ class UpstreamTests(unittest.TestCase):
                 while up_stream.sink.queue.qsize() > 0:
                     decoded_messages[index].append(await up_stream.sink.queue.get())
                     up_stream.sink.queue.task_done()
-                up_stream.out_task.cancel()
-            source.stream_task.cancel()
 
         self.loop.run_until_complete(main())
         self.assertEqual(2, len(decoded_messages[1]), "Expected two messages in stream_1")
@@ -173,8 +163,6 @@ class UpstreamTests(unittest.TestCase):
             in_queue.sync_q.put(message)
             decoded_messages.append(await up_stream.sink.queue.get())
             up_stream.sink.queue.task_done()
-            up_stream.source.stream_task.cancel()
-            up_stream.out_task.cancel()
 
         self.loop.run_until_complete(main())
         self.assertEqual(1, len(decoded_messages), "Expected one decoded message")
@@ -242,8 +230,6 @@ class UpstreamTests(unittest.TestCase):
                 while stream.sink.queue.qsize() > 0:
                     decoded_messages.append(await stream.sink.queue.get())
                     stream.sink.queue.task_done()
-                stream.out_task.cancel()
-            source.stream_task.cancel()
 
         self.loop.run_until_complete(main())
         self.assertEqual(3, len(decoded_messages), "Expected device messages")

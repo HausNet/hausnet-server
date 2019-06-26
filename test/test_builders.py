@@ -5,14 +5,11 @@ from hausnet.builders import DevicePlantBuilder, DeviceInterface
 from hausnet.devices import NodeDevice, BasicSwitch
 from hausnet.flow import *
 from hausnet.states import OnOffState
+from test.helpers import AsyncTest
 
 
-class DeviceBuilderTests(unittest.TestCase):
+class DeviceBuilderTests(AsyncTest):
     """Test the building of the device tree"""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.loop = asyncio.new_event_loop()
 
     def test_can_build_single_node_with_single_device(self):
         """Can a basic node + device be built?"""
@@ -28,8 +25,6 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
-        for interface_key in interfaces:
-            interfaces[interface_key].cancel_tasks()
         self.assertEqual(len(interfaces), 3, "Expected 3 device interfaces")
         root = interfaces['root'].device
         self.assertEqual(len(root.sub_devices), 1, "Expected one device at the root of the tree")
@@ -78,8 +73,6 @@ class DeviceBuilderTests(unittest.TestCase):
                 }
             }
         })
-        for interface_key in interfaces:
-            interfaces[interface_key].cancel_tasks()
         # interfaces
         self.assertEqual(len(interfaces), 8, "Expected 8 device interfaces")
         # Test nodes
@@ -154,8 +147,6 @@ class DeviceBuilderTests(unittest.TestCase):
             interfaces['test_node.test_switch_1'].up_stream.sink.queue.task_done()
             out_messages.append(await interfaces['test_node.test_switch_2'].up_stream.sink.queue.get())
             interfaces['test_node.test_switch_2'].up_stream.sink.queue.task_done()
-            for interface_key in interfaces:
-                interfaces[interface_key].cancel_tasks()
 
         self.loop.run_until_complete(main())
         self.assertEqual(
@@ -194,8 +185,6 @@ class DeviceBuilderTests(unittest.TestCase):
             while not in_queue.empty():
                 logger.debug("Downstream in-queue size: %s", str(in_queue.qsize()))
                 await asyncio.sleep(0.1, loop=self.loop)
-            for interface_key in interfaces:
-                interfaces[interface_key].cancel_tasks()
 
         self.loop.run_until_complete(main())
         out_stream = DeviceInterface.downstream_dest_queue.sync_q

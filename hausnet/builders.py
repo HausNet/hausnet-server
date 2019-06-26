@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import cast
 
+import janus
+
 from hausnet.devices import NodeDevice, BasicSwitch, CompoundDevice, Device, SubDevice, RootDevice
 from hausnet.operators.operators import HausNetOperators as Op
 from hausnet.flow import *
@@ -24,8 +26,8 @@ class DeviceInterface:
     def __init__(
             self,
             device: (Device, CompoundDevice),
-            up_stream: MessageStream,
-            down_stream: MessageStream
+            up_stream: MessageStream = None,
+            down_stream: MessageStream = None
     ) -> None:
         """Set up the components
 
@@ -36,15 +38,9 @@ class DeviceInterface:
         self.device: (Device, CompoundDevice) = device
         self.up_stream: MessageStream = up_stream
         self.down_stream: MessageStream = down_stream
-
-    def cancel_tasks(self):
-        """Convenience function for testing, cancels all the tasks part of streaming in this bundle"""
-        if self.up_stream:
-            self.up_stream.out_task.cancel()
-            self.up_stream.source.stream_task.cancel()
-        if self.down_stream:
-            self.down_stream.out_task.cancel()
-            self.down_stream.source.stream_task.cancel()
+        # Convenience accessors to in- and out-queues, from a client perspective
+        self.in_queue: asyncio.Queue = down_stream.source.queue if down_stream else None
+        self.out_queue: asyncio.Queue = up_stream.sink.queue if up_stream else None
 
 
 class DeviceBuilder(ABC):
@@ -203,7 +199,7 @@ class NodeDeviceBuilder(DeviceBuilder):
 class DevicePlantBuilder:
     """Builds all the devices in the device tree, with a RootDevice at the root of the tree."""
 
-    def __init__(self, loop):
+    def __init__(self, loop, mqtt_server: str = conf.MQTT_BROKER, mqtt_port: int = conf.MQTT_PORT):
         """Build the whole plant recursively, employing type-specific builders as needed.
 
         :param loop: The async event loop to run the plant on.
@@ -215,8 +211,10 @@ class DevicePlantBuilder:
         downstream_sink = AsyncStreamToQueue(cast(asyncio.Queue, DeviceInterface.downstream_dest_queue.async_q))
         self.builders = DeviceBuilderRegistry(loop, upstream_source, downstream_sink)
         self.mqtt_client: MqttClient = MqttClient(
-            DeviceInterface.downstream_dest_queue.sync_q,
-            DeviceInterface.upstream_src_queue.sync_q
+            cast(queue.Queue, DeviceInterface.downstream_dest_queue.sync_q),
+            cast(queue.Queue, DeviceInterface.upstream_src_queue.sync_q),
+            mqtt_server,
+            mqtt_port
         )
 
     def build(self, blueprint: Dict[str, Any]) -> Dict[str, DeviceInterface]:
@@ -231,7 +229,7 @@ class DevicePlantBuilder:
         :param blueprint: Blueprint, of the whole plant, as a dictionary
         :return: A dictionary of device bundles.
         """
-        root = DeviceInterface(RootDevice(), None, None)
+        root = DeviceInterface(RootDevice())
         bundles = self._from_blueprints(blueprint, root.device)
         bundles['root'] = root
         return bundles
