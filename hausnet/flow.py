@@ -53,7 +53,7 @@ class AsyncStreamToQueue(AsyncStream):
         self.queue = sink_queue
 
     async def asend(self, value) -> None:
-        logger.debug("Received value, putting in queue")
+        logger.debug("Received message, putting in queue: message=%s.", str(value))
         await self.queue.put(value)
 
 

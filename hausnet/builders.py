@@ -117,6 +117,7 @@ class BasicSwitchBuilder(DeviceBuilder):
         downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(loop=self.loop))
         downstream_ops = (
             downstream_source
+            | Op.tap(lambda msg, dev=device: dev.state.set_value(msg['state']))
             | Op.map(lambda msg, dev=device: {dev.device_id: msg})
             | Op.map(lambda msg, dev=device: dev.get_node().coder.encode(msg))
             | Op.map(lambda msg, dev=device: {
@@ -153,6 +154,7 @@ class NodeDeviceBuilder(DeviceBuilder):
             stream are:
             1. The main data stream is filtered for messages on the node's upstream topic;
             2. Then, messages are decoded to a dictionary format from, e.g, JSON;
+            3. Messages are filtered so only those addressed to the node itself are passed through.
         At its end, the upstream flow presents an Observable for use by clients. This flow contains just messages
         from this node.
 
@@ -170,6 +172,7 @@ class NodeDeviceBuilder(DeviceBuilder):
                 self.upstream_source
                 | Op.filter(lambda msg, dev=device: msg['topic'].startswith(dev.topic_prefix()))
                 | Op.map(lambda msg, dev=device: dev.coder.decode(msg['message']))
+                | Op.filter(lambda msg_dict, dev=device: dev.device_id in msg_dict)
         )
         up_stream = MessageStream(
             self.loop,

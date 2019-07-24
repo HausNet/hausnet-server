@@ -232,7 +232,7 @@ class UpstreamTests(AsyncTest):
                     stream.sink.queue.task_done()
 
         self.loop.run_until_complete(main())
-        self.assertEqual(3, len(decoded_messages), "Expected device messages")
+        self.assertEqual(3, len(decoded_messages), "Expected three device messages")
         self.assertIn({'state': 'OFF'}, decoded_messages, "'OFF' state should be present")
         self.assertIn({'state': 'ON'}, decoded_messages, "'ON' state should be present")
         self.assertIn({'state': 'UNDEFINED'}, decoded_messages, "'UNDEFINED' state should be present'")
