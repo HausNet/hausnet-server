@@ -4,7 +4,7 @@ import unittest
 from hausnet.builders import DevicePlantBuilder, DeviceInterface
 from hausnet.devices import NodeDevice, BasicSwitch
 from hausnet.flow import *
-from hausnet.states import OnOffState
+from hausnet.states import OnOffState, FloatState
 from test.helpers import AsyncTest
 
 
@@ -110,6 +110,32 @@ class DeviceBuilderTests(AsyncTest):
         sub_device = cast(BasicSwitch, node_2.sub_devices['test_switch_C'])
         self.assertIs(sub_device.__class__, BasicSwitch, "Sub-device C should be a BasicSwitch")
         self.assertEqual(sub_device.device_id, 'switch_3', "Sub-device C's ID should be switch_3")
+
+    def test_can_build_float_sensor(self):
+        """Test that a floating-point sensor can be built from a blueprint."""
+        blueprint = {
+            'sensor_1': {
+                'type':      'sensor',
+                'device_id': 'thermo',
+                'config': {
+                    'state.type': 'float',
+                    'state.unit': 'F',
+                },
+            },
+            'sensor_2': {
+                'type':      'sensor',
+                'device_id': 'thermo',
+                'config':    {
+                    'state.type': 'float',
+                },
+            }
+        }
+        interfaces = DevicePlantBuilder(self.loop).build(blueprint)
+        self.assertEqual(3, len(interfaces), "Expected two devices + root to be built")
+        self.assertEqual('F', interfaces['sensor_1'].device.state.unit, "Expected a unit 'F'")
+        self.assertIsInstance(interfaces['sensor_1'].device.state, FloatState, "Expected a floating point state")
+        self.assertIsNone(interfaces['sensor_2'].device.state.unit, "Unit should not exist")
+        self.assertIsInstance(interfaces['sensor_1'].device.state, FloatState, "Expected a floating point state")
 
     def test_switch_upstream_wiring_delivers(self):
         """Test that a basic switch state updates get delivered to the external world"""

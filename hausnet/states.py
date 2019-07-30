@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Union
 
 
 class State:
@@ -12,18 +12,17 @@ class State:
         self.value = value
 
     @property
-    def value(self):
-        return self.__value
+    def value(self) -> Any:
+        return self._value
 
     @value.setter
     def value(self, new_value: Any):
         if not self.in_possible_values(new_value):
             raise ValueError("%s not a valid value for $s", new_value, self.__class__.__name__)
-        self.__value = new_value
+        self._value = new_value
 
     def set_value(self, new_value: Any):
-        """ Alias of the setter for use in lambdas
-        """
+        """Alias of the setter for use in lambdas"""
         self.value = new_value
 
     @classmethod
@@ -32,8 +31,7 @@ class State:
 
 
 class DiscreteState(State):
-    """ Encapsulates a State that can only take one of a small number of values
-    """
+    """Encapsulates a State that can only take one of a small number of values"""
     possible_values = []
 
     @classmethod
@@ -53,3 +51,38 @@ class OnOffState(DiscreteState):
         super().__init__(value)
 
 
+class ContinuousState(State):
+    """A class that has states on a continuum, instead of named states."""
+
+    def __init__(self, value: Union[int, float] = 0, unit: str = None):
+        super().__init__(value)
+        self._unit = unit
+
+    @classmethod
+    def in_possible_values(cls, value) -> bool:
+        return type(value) in (float, int)
+
+    @property
+    def unit(self):
+        """Return the unit of the state values, if one exists."""
+        if self._unit:
+            return self._unit
+        return None
+
+    @unit.setter
+    def unit(self, value: str):
+        """Set the unit the state values are measured in."""
+        self._unit = value
+
+
+class FloatState(ContinuousState):
+    """A state that is a floating-point number."""
+
+    @classmethod
+    def in_possible_values(cls, value) -> bool:
+        return type(value) in (int, float)
+
+    def __init__(self, unit: str = None):
+        super().__init__(0, unit)
+        if unit:
+            self._unit = unit

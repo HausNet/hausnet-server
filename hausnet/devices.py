@@ -129,17 +129,6 @@ class StatefulDevice(SubDevice, ABC):
         self.__state = new_state
 
 
-class MeasuringDevice(ABC):
-    """ Allows a device to measure internal or external values, or, react to events. Note: This assumes the class this
-        is used in is derived from AtomicDevice, and thus has a state variable and a container.
-    """
-    def receive_state(self, new_value: Any):
-        """ Called by the container whenever a state update is received
-        """
-        # noinspection PyUnresolvedReferences
-        self.state.value = new_value
-
-
 class ControlDevice(ABC):
     """ Allows a device to control hardware. Records requests for state changes without disturbing the current state,
         in the expectation that the current state will be updated after some condition is met (e.g. the device
@@ -165,6 +154,11 @@ class DeviceManagementInterface(ABC):
     """ Interface to a device from a client's (of the library) perspective. I.e. ways to control the device and receive
         data from it
     """
+    pass
+
+
+class Sensor(StatefulDevice):
+    """A sensor measuring one value. The type of the value depends on the state object supplied on construction"""
     pass
 
 

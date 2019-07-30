@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import cast
+from typing import cast, Union
 
 import janus
 
-from hausnet.devices import NodeDevice, BasicSwitch, CompoundDevice, Device, SubDevice, RootDevice
+from hausnet.devices import NodeDevice, BasicSwitch, CompoundDevice, Device, SubDevice, RootDevice, Sensor
 from hausnet.operators.operators import HausNetOperators as Op
 from hausnet.flow import *
+from hausnet.states import FloatState, State
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class BasicSwitchBuilder(DeviceBuilder):
         TODO: Currently just handles state. Add configuration too.
         """
         device = BasicSwitch(blueprint['device_id'])
+        # noinspection DuplicatedCode
         device.owner_device = owner
         upstream_ops = (
             self.upstream_source
@@ -132,6 +134,94 @@ class BasicSwitchBuilder(DeviceBuilder):
             self.downstream_sink
         )
         return DeviceInterface(device, up_stream, down_stream)
+
+
+class SensorBuilder(DeviceBuilder):
+    """Builds a sensor from a blueprint dictionary. Configuration structure:
+            {
+              'type':      'sensor',
+              'device_id': 'thermo',
+              'config':    {
+                'state.type':  'float',
+                'state.unit': 'F',
+                'state.min':   '-50',       # TBD
+                'state.max':   '50',        # TBD
+                'model':       'DS18B20'    # TBD
+              },
+            }
+        The device_id of the basic switch is the device_id of the firmware device in the node that contains it.
+    """
+    def from_blueprint(self, blueprint: Dict[str, Any], owner: CompoundDevice = None) -> DeviceInterface:
+        # noinspection DuplicatedCode
+        """Given a plan dictionary as above, construct the device.
+
+                The upstream is constructed with the following operations:
+                    1. The main data stream is filtered for messages on the switch's parent node's upstream topic;
+                    2. Then, messages are decoded to a dictionary format from, e.g, JSON;
+                    3. The resultant dictionary is further filtered by this device's ID (to separate out from possible
+                       multiple devices in the message);
+                    4. Then, the message payload is extracted;
+                    5. Finally, the message state is set via a tap.
+                At its end, the upstream flow presents an Observable for use by clients. This flow contains just
+                messages from the specific device.
+
+                The downstream is constructed with the following operations:
+                    1. The input payload is put in a dictionary with the device ID as the key.
+                    2. The result is encoded with the device's coder.
+                    3. A dictionary with the topic and the encoded message is created.
+
+                :param blueprint: A blueprint in the form of the dictionary above.
+                :param owner:     The owner (usually the node) for this device
+                :returns: A device bundle with the BasicSwitch device object and the up/downstream data sources/sinks.
+
+                TODO: Currently just handles state. Add configuration too.
+                """
+        state = self.create_state(blueprint['config'])
+        device = Sensor(blueprint['device_id'], state)
+        # noinspection DuplicatedCode
+        device.owner_device = owner
+        upstream_ops = (
+            self.upstream_source
+            | Op.filter(lambda msg, dev=device: msg['topic'].startswith(dev.get_node().topic_prefix()))
+            | Op.map(lambda msg, dev=device: dev.get_node().coder.decode(msg['message']))
+            | Op.filter(lambda msg_dict, dev=device: dev.device_id in msg_dict)
+            | Op.map(lambda msg_dict, dev=device: msg_dict[dev.device_id])
+            | Op.tap(lambda dev_msg, dev=device: dev.state.set_value(dev_msg['state']))
+        )
+        up_stream = MessageStream(
+            self.loop,
+            self.upstream_source,
+            upstream_ops,
+            AsyncStreamToQueue(asyncio.Queue(loop=self.loop))
+        )
+        downstream_source = AsyncStreamFromQueue(self.loop, asyncio.Queue(loop=self.loop))
+        downstream_ops = (
+            downstream_source
+            | Op.map(lambda msg, dev=device: {dev.device_id: msg})
+            | Op.map(lambda msg, dev=device: dev.get_node().coder.encode(msg))
+            | Op.map(lambda msg, dev=device: {
+                'topic': topic_name(f'{dev.get_node().topic_prefix()}', TOPIC_DIRECTION_DOWNSTREAM),
+                'message': msg
+            })
+        )
+        down_stream = MessageStream(
+            self.loop,
+            downstream_source,
+            downstream_ops,
+            self.downstream_sink
+        )
+        return DeviceInterface(device, up_stream, down_stream)
+
+    @staticmethod
+    def create_state(config: Dict[str, Union[str, float, bool]]) -> State:
+        """Create the sensor's state variable, given its configuration. Note: Work in progress """
+        unit = None
+        state = None
+        if 'state.unit' in config:
+            unit = config['state.unit']
+        if config['state.type'] == 'float':
+            state = FloatState(unit)
+        return state
 
 
 class NodeDeviceBuilder(DeviceBuilder):
@@ -278,7 +368,8 @@ class DeviceBuilderRegistry:
         DeviceBuilder.upstream_source = upstream_source
         self.registry: Dict[str, DeviceBuilder] = {
             'node':         NodeDeviceBuilder(loop),
-            'basic_switch': BasicSwitchBuilder(loop)
+            'basic_switch': BasicSwitchBuilder(loop),
+            'sensor':       SensorBuilder(loop),
         }
 
     def builder_for(self, type_handle: str) -> DeviceBuilder:
