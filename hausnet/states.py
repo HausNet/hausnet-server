@@ -63,11 +63,9 @@ class ContinuousState(State):
         return type(value) in (float, int)
 
     @property
-    def unit(self):
+    def unit(self) -> Union[str, None]:
         """Return the unit of the state values, if one exists."""
-        if self._unit:
-            return self._unit
-        return None
+        return self._unit if self._unit else None
 
     @unit.setter
     def unit(self, value: str):
