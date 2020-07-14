@@ -1,5 +1,4 @@
 from typing import cast
-import unittest
 
 from hausnet.builders import DevicePlantBuilder, DeviceInterface
 from hausnet.devices import NodeDevice, BasicSwitch
