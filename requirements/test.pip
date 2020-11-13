@@ -1,3 +1,4 @@
+-r base.pip
 tox
 flake8
 pylint

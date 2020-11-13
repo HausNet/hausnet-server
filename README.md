@@ -1,8 +1,11 @@
 # hausnet-server
-Server-side HausNet protocol implementation
+Server-side HausNet protocol implementation. 
 
 # Architecture
-## Device tree
+A HausNet system consists of an integration with a 
+management system (e.g. [Home Assistant](https://github.com/HausNet/hausnet-hass)), a server (this 
+software), and a network of devices running the protocol.
+
 # Protocol
 
 ## Module / Device Configuration
