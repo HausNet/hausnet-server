@@ -10,7 +10,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="hausnet_server",
-    version="0.0.1",
+    version="0.0.2",
     author="Louis Calitz",
     author_email="louis@hausnet.io",
     description="A server for the HausNet protocol",
