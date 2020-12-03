@@ -3,3 +3,4 @@ tox
 flake8
 pylint
 pydocstyle
+asynctest

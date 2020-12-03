@@ -1,3 +1,5 @@
 paho-mqtt
-aioreactive
+# TODO: aioreactive pinned to 0.5.0 because of major reboot - accommodate newest version.
+aioreactive==0.5.0
 janus
+phx-class-registry

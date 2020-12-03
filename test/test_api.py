@@ -1,36 +1,34 @@
-import unittest
-import asyncio
+import asynctest
 
-from hausnet.builders import DevicePlantBuilder, DeviceInterface
+from hausnet.builders import PlantBuilder
 from hausnet.states import OnOffState
-from test.helpers import AsyncTest
 
 
-class ApiTest(AsyncTest):
+class ApiTest(asynctest.TestCase):
     """Test from the viewpoint of a client (e.g. HASS)"""
 
-    def test_send_state_to_switch(self):
-        interfaces = DevicePlantBuilder(self.loop).build({
+    @asynctest.strict()
+    async def test_send_state_to_switch(self):
+        blueprint = {
             'test_node': {
-                'type': 'node',
+                'type':      'node',
                 'device_id': 'test/ABC123',
-                'devices': {
+                'devices':   {
                     'test_switch': {
-                        'type': 'basic_switch',
+                        'type':      'basic_switch',
                         'device_id': 'switch',
                     }
                 }
             }
-        })
-        interface = interfaces['test_node.test_switch']
-
-        async def main():
-            await interface.in_queue.put({'state': OnOffState.ON})
-            await interface.in_queue.put({'state': OnOffState.OFF})
-            await interface.in_queue.join()
-
-        self.loop.run_until_complete(main())
-        queue = DeviceInterface.downstream_dest_queue
+        }
+        plant = PlantBuilder().build(blueprint, self.loop)
+        assembly = plant.device_assemblies['test_node.test_switch']
+        plant.upstream_src_queue.sync_q.put({'state': OnOffState.ON})
+        plant.upstream_src_queue.sync_q.put({'state': OnOffState.OFF})
+        plant.upstream_source.start()
+        await plant.upstream_source.queue.join()
+        plant.upstream_source.stop()
+        queue = plant.downstream_dest_queue
         self.assertEqual(
             {'topic': 'hausnet/test/ABC123/downstream', 'message': '{"switch":{"state":"ON"}}'},
             queue.sync_q.get(),

@@ -31,6 +31,7 @@ class JsonCoder(Coder):
         :returns: A dictionary object representing the JSON
         :except: Passes on JSON decoding exceptions - have to be handled at a higher level.
         """
+        logger.debug("Decoding: %s", json_str)
         try:
             return json.loads(json_str)
         except (ValueError, KeyError, TypeError) as e:
@@ -44,8 +45,9 @@ class JsonCoder(Coder):
         :param json_obj: Object containing real data structure.
         :return: The data structure rendered as JSON
         """
+        logger.debug("Decoding: %s", json_obj)
         try:
             return json.dumps(json_obj, separators=(',', ':'))
         except (ValueError, TypeError) as e:
-            logger.error("JSON encoding failed for: %s", object)
+            logger.error("JSON encoding failed for: %s", json_obj)
             raise e
