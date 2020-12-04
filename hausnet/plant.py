@@ -14,6 +14,8 @@ from hausnet.flow import MessagePipe, AsyncStreamFromQueue, AsyncStreamToQueue, 
 class DeviceAssembly:
     """ A class binding together everything needed to work with a device: The device itself; Its upstream and
         downstream data pipes.
+
+        TODO: When constructing, make both ends of pipes Janus queues so either sync/async access is possible.
     """
 
     def __init__(
