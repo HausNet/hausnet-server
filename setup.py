@@ -15,19 +15,19 @@ with open("requirements/base-frozen.pip") as fh:
 
 setuptools.setup(
     name="hausnet_server",
-    version="0.0.3",
+    version="0.0.6",
     author="Louis Calitz",
     author_email="louis@hausnet.io",
     description="A server for the HausNet protocol",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/liber-tas/hausmon-client",
+    url="https://github.com/HausNet/hausnet-server",
     packages=setuptools.find_packages(exclude=["tests"]),
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires='>=3.7',
+    python_requires='>=3.8',
     install_requires=reqs
 )

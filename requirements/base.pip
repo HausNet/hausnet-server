@@ -3,3 +3,4 @@ paho-mqtt
 aioreactive==0.5.0
 janus
 phx-class-registry
+packaging
