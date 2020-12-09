@@ -1,5 +1,7 @@
+import os
 from typing import cast
 
+import unittest
 import asynctest
 import janus
 import aioreactive.core as aioreact
@@ -363,3 +365,21 @@ class UpstreamTests(asynctest.TestCase):
         self.assertIn({'state': 'UNDEFINED'}, decoded_messages, "'UNDEFINED' state should be present'")
         self.assertEqual('UNDEFINED', switch_1.state.value, "switch_1 state should be 'UNDEFINED'")
         self.assertEqual('ON', switch_2.state.value, "switch_2 state should be 'ON'")
+
+
+@unittest.skipIf("MQTT_TEST" not in os.environ.keys(), "MQTT test not enabled")
+class MqttClientTests(unittest.TestCase):
+    """ Test the MQTT client. """
+
+    def test_message_receipt(self):
+        """ Test that messages sent are received. """
+        sub_queue = queue.Queue()
+        pub_queue = queue.Queue()
+        MqttClient(pub_queue, sub_queue)
+        pub_queue.put({'topic': 'hausnet/test/ABC123/upstream', 'message': 'hello'})
+        message = sub_queue.get(block=True, timeout=30)
+        self.assertEqual(
+            {'topic': 'hausnet/test/ABC123/upstream', 'message': b'hello'},
+            message,
+            "Expected same message that was sent"
+        )
