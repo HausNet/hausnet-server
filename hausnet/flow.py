@@ -132,6 +132,7 @@ class MessagePipe:
         logger.debug("Subscribing the sink to the stream operations.")
         await subscribe(self.stream_ops, self.sink)
 
+
 class MqttClient(mqttc.Client):
     """ Manages MQTT communication for the HausNet environment. Constrains the Paho client to just those
     functions needed to support the needed functionality.

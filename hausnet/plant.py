@@ -24,18 +24,18 @@ class DeviceAssembly:
             upstream_pipe: MessagePipe = None,
             downstream_pipe: MessagePipe = None
     ) -> None:
-        """Set up the components
+        """ Set up the components
 
-        :param device:      The device object, capturing the static structure of the device and its owner / sub-devices
-        :param upstream_pipe:   A MessagePipe managing upstream data flow
-        :param downstream_pipe: A MessagePipe managing downstream data flow
+            :param device:      The device object, capturing the static structure of the device and its owner / sub-devices
+            :param upstream_pipe:   A MessagePipe managing upstream data flow
+            :param downstream_pipe: A MessagePipe managing downstream data flow
         """
         self.device: (Device, CompoundDevice) = device
         self.upstream_pipe: MessagePipe = upstream_pipe
         self.downstream_pipe: MessagePipe = downstream_pipe
         # Convenience accessors to in- and out-queues, from a client perspective
-        self.in_queue: asyncio.Queue = downstream_pipe.source.queue if downstream_pipe else None
-        self.out_queue: asyncio.Queue = upstream_pipe.sink.queue if upstream_pipe else None
+        self.client_in_queue: asyncio.Queue = downstream_pipe.source.queue if downstream_pipe else None
+        self.client_out_queue: asyncio.Queue = upstream_pipe.sink.queue if upstream_pipe else None
 
 
 class DevicePlant:
@@ -65,3 +65,22 @@ class DevicePlant:
         )
         # The device assemblies in the plant
         self.device_assemblies: Dict[str, DeviceAssembly] = {}
+
+    def start(self):
+        """ Start up all the pipes by starting streaming from the source queues in both directions. """
+        assembly: DeviceAssembly
+        self.upstream_source.start()
+        for assembly in self.device_assemblies.values():
+            if assembly.downstream_pipe is None:
+                continue
+            assembly.downstream_pipe.source.start()
+
+    def stop(self):
+        """ Stop all the pipes by stopping streaming from the source queues in both directions. """
+        assembly: DeviceAssembly
+        self.upstream_source.stop()
+        for assembly in self.device_assemblies.values():
+            if assembly.downstream_pipe is None:
+                continue
+            assembly.downstream_pipe.source.stop()
+
