@@ -14,3 +14,7 @@ class HausNet:
         """ Convenience accessor to devices. """
         return self.plant.device_assemblies
 
+    def start(self):
+        """ Convenience accessor to plant startup. """
+        self.plant.start()
+
