@@ -39,3 +39,14 @@ An example of a structure containing configuration (in YAML) :
           period: 600
         
 ```
+
+# Development notes
+## Building & uploading PyPi package
+1. First, edit ```setup.py``` and update the version number.
+2. Remove the old distribution, build the distribution, and push it to PyPi:
+    ```
+    rm dist/*
+    python setup.py sdist bdist_wheel
+    twine upload dist/*
+    ```
+3. Check in the final changes, and tag the release with "v1.2.3"

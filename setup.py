@@ -15,7 +15,7 @@ with open("requirements/base-frozen.pip") as fh:
 
 setuptools.setup(
     name="hausnet_server",
-    version="0.0.7",
+    version="0.0.8",
     author="Louis Calitz",
     author_email="louis@hausnet.io",
     description="A server for the HausNet protocol",
